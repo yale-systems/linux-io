@@ -635,6 +635,12 @@ config THREAD_SIZE_ORDER
 	  Specify the Pages of thread stack size (from 4KB to 64KB), which also
 	  affects irq stack size, which is equal to thread stack size.
 
+config RISCV_ROCC
+	bool "Enable RoCC instructions"
+	default y
+        help
+       	  Say N here if you want to disable all non-standard custom instructions
+
 endmenu # "Platform type"
 
 menu "Kernel features"
