@@ -877,8 +877,8 @@ void __init random_init_early(const char *command_line)
 		
 		/*
 		 * With random.trust_cpu=on in the kernel command line, 
-   		 * sets entropy to 256 to initialize random number geenrator
-      		 * in early boot.
+   		 * sets entropy to 256 (minimum threshold from line 612) 
+      		 * to initialize random number geenrator in early boot.
 		 */
 		size_t artifical_arch_bits = 256;
 		_credit_init_bits(artificial_arch_bits);
