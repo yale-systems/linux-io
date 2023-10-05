@@ -840,6 +840,10 @@ static struct notifier_block pm_notifier = { .notifier_call = random_pm_notifica
  */
 void __init random_init_early(const char *command_line)
 {
+#ifdef CONFIG_OVERRIDE_RNG_ENTROPY
+        _credit_init_bits(CONFIG_OVERRIDE_RNG_ENTROPY_VALUE);
+        pr_notice("overriding entropy value\n");
+#else
 	unsigned long entropy[BLAKE2S_BLOCK_SIZE / sizeof(long)];
 	size_t i, longs, arch_bits;
 
@@ -871,18 +875,9 @@ void __init random_init_early(const char *command_line)
 	/* Reseed if already seeded by earlier phases. */
 	if (crng_ready())
 		crng_reseed(NULL);
-	else if (trust_cpu) {
-
-		// _credit_init_bits(arch_bits);
-		
-		/*
-		 * With random.trust_cpu=on in the kernel command line, 
-   		 * sets entropy to 256 (minimum threshold from line 612) 
-      		 * to initialize random number geenrator in early boot.
-		 */
-		size_t artifical_arch_bits = 256;
-		_credit_init_bits(artificial_arch_bits);
-	}	
+	else if (trust_cpu)
+		_credit_init_bits(arch_bits);
+#endif
 }
 
 /*
