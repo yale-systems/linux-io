@@ -19,6 +19,8 @@
  * In addition, the macro 'exit' must be defined with the function
  * epilogue.
  *
+ * Must also define a temporary variable Ltempvar that can be used for the accelerator if enabled.
+ *
  * The following caller-saved registers are clobbered by this routine:
  * a0-a1, a3-a7, t0-t5 (a2 and t6 are preserved)
  */
@@ -33,6 +35,95 @@
 	 * of bytes copied in case of a access exception.
 	 */
 	add	t5, a0, a2
+
+#define MEMCPY_ACC
+#ifdef  MEMCPY_ACC
+	// if size is less than heuristic, use the cpu code
+	// same as below
+	li	a3, 9*SZREG /* size must be larger than size in word_copy */
+	bltu	a2, a3, .Lcpu_memcpy
+
+	// check if they are overlapping
+	beq a0, a1, .Lcpu_memcpy
+	// have t0 be the lesser value
+	add t0, a0, x0
+	add t1, a1, x0
+	bltu t0, t1, .Lskip_swap
+	// swap
+	xor t0, t0, t1
+	xor t1, t0, t1
+	xor t0, t0, t1
+
+.Lskip_swap:
+	add t0, t0, a2
+	bgtu t0, t1, .Lcpu_memcpy
+
+	// memcpy accelerator here
+	// a0 - dst, a1 - src, a2 - sz
+
+	li a6, 4096
+
+	// touch/pagein dst
+	add a4, a0, 0 // dst copy
+	add a5, a0, a2 // dst + size
+	bleu a5, a4, .Lskip_dst_pgin
+.Lpgin_loop0:
+	access lb      x0, 0(a4)
+	add a4, a4, a6
+	bltu a4, a5, .Lpgin_loop0
+
+.Lskip_dst_pgin:
+	// touch/pagein now src
+	add a4, a1, 0 // src copy
+	add a5, a1, a2 // src + size
+	bleu a5, a4, .Lskip_src_pgin
+.Lpgin_loop1:
+	access lb      x0, 0(a4)
+	add a4, a4, a6
+	bltu a4, a5, .Lpgin_loop1
+.Lskip_src_pgin:
+
+	// assumes no other accels, assumes no contention
+	// cfg=0, accelid=0
+	// rerocc acq
+	li a6, 0x100
+	csrw 0x810, a6 //0x100 //<-  (0x100 | (0 & 0xff))
+	csrr a3, 0x810
+	andi a3, a3, 0x100 // -> mask with 0x100
+	beq x0, a3, .Lcpu_memcpy
+
+	// set opc
+	csrw 0x800, x0
+
+	// fence (clear accel TLB)
+	//ROCC_INSTRUCTION(/*OPC*/0, /*FUNCT*/0)
+	.insn r CUSTOM_0, 0, 0, x0, x0, x0
+
+	// start xact
+	//ROCC_INSTRUCTION_SS(/*OPC*/0, a1, a2, /*FUNCT*/1)
+	.insn r CUSTOM_0, 3, 1, x0, a1, a2
+	// defined in main .S
+	la a3, .Ltempvar
+	access REG_S x0, 0(a3) // clear temp
+	// ROCC_INSTRUCTION_SS(/*OPC*/0, a0, a3, /*FUNCT*/2)
+	.insn r CUSTOM_0, 3, 2, x0, a0, a3
+
+	// blocking
+	//ROCC_INSTRUCTION_D(/*OPC*/0, a4, /*FUNCT*/3)
+	.insn r CUSTOM_0, 4, 3, a4, x0, x0
+.Lwait:
+	fence
+	access REG_L a4, 0(a3)
+	beq x0, a4, .Lwait
+
+	// release (and clear rerocc TLB)
+	csrw 0x810, x0
+
+	exit
+
+#endif
+
+.Lcpu_memcpy:
 
 	/*
 	 * Register allocation for code below:

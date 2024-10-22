@@ -93,3 +93,8 @@ ENTRY(__clear_user)
 	ret
 ENDPROC(__clear_user)
 EXPORT_SYMBOL(__clear_user)
+
+.data
+.balign 8
+.Ltempvar:
+	.long 0

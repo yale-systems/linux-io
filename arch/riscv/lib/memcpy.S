@@ -27,3 +27,8 @@ WEAK(memcpy)
 END(__memcpy)
 SYM_FUNC_ALIAS(__pi_memcpy, __memcpy)
 SYM_FUNC_ALIAS(__pi___memcpy, __memcpy)
+
+.data
+.balign 8
+.Ltempvar:
+	.long 0
