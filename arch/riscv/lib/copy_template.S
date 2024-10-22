@@ -36,7 +36,7 @@
 	 */
 	add	t5, a0, a2
 
-//#define MEMCPY_ACC
+#define MEMCPY_ACC
 #ifdef  MEMCPY_ACC
 	// if size is less than heuristic, use the cpu code
 	// same as below
@@ -82,6 +82,9 @@
 	add a4, a4, a6
 	bltu a4, a5, .Lpgin_loop1
 .Lskip_src_pgin:
+
+	// trigger
+	addi x0, x1, 0
 
 	// assumes no other accels, assumes no contention
 	// cfg=0, accelid=0
