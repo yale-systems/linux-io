@@ -36,7 +36,7 @@
 	 */
 	add	t5, a0, a2
 
-#define MEMCPY_ACC
+//#define MEMCPY_ACC
 #ifdef  MEMCPY_ACC
 	// if size is less than heuristic, use the cpu code
 	// same as below
