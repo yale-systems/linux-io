@@ -37,6 +37,7 @@
 	add	t5, a0, a2
 
 #define MEMCPY_ACC
+#define USE_REROCC
 #ifdef  MEMCPY_ACC
 	// if size is less than heuristic, use the cpu code
 	// same as below
@@ -57,9 +58,6 @@
 .Lskip_swap:
 	add t0, t0, a2
 	bgtu t0, t1, .Lcpu_memcpy
-
-	// memcpy accelerator here
-	// a0 - dst, a1 - src, a2 - sz
 
 	li a6, 4096
 
@@ -83,20 +81,30 @@
 	bltu a4, a5, .Lpgin_loop1
 .Lskip_src_pgin:
 
-	// trigger
-	addi x0, x1, 0
+	//// trigger for debugging
+	//addi x0, x1, 0
 
-	// assumes no other accels, assumes no contention
-	// cfg=0, accelid=0
-	// rerocc acq
+#define CFG_ID 15
+#define ACC_ID 1
+#define OPC 0
+#define CFG_ADDR (0x810 + CFG_ID)
+#define OPC_ADDR (0x800 + OPC)
+#define BAR_ADDR (0x804)
+
+#ifdef USE_REROCC
+	// rr_acquire_single
 	li a6, 0x100
-	csrw 0x810, a6 //0x100 //<-  (0x100 | (0 & 0xff))
-	csrr a3, 0x810
-	andi a3, a3, 0x100 // -> mask with 0x100
+	ori a6, a6, ACC_ID
+	csrw CFG_ADDR, a6 // (0x100 | (id & 0xff))
+	csrr a3, CFG_ADDR
+	andi a3, a3, 0x100 // mask with 0x100
+
+	// if you can't acquire immediately, skip to CPU memcopy
 	beq x0, a3, .Lcpu_memcpy
 
-	// set opc
-	csrw 0x800, x0
+	// rr_set_opc
+	csrw OPC_ADDR, CFG_ID
+#endif
 
 	// fence (clear accel TLB)
 	//ROCC_INSTRUCTION(/*OPC*/0, /*FUNCT*/0)
@@ -119,8 +127,11 @@
 	access REG_L a4, 0(a3)
 	beq x0, a4, .Lwait
 
-	// release (and clear rerocc TLB)
-	csrw 0x810, x0
+#ifdef USE_REROCC
+	// rr_fence (clear rerocc TLB) + rr_release
+	csrw BAR_ADDR, CFG_ID
+	csrw CFG_ADDR, x0
+#endif
 
 	exit
 
