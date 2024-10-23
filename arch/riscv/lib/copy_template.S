@@ -41,7 +41,7 @@
 #ifdef  MEMCPY_ACC
 	// if size is less than heuristic, use the cpu code
 	// same as below
-	li	a3, 9*SZREG /* size must be larger than size in word_copy */
+	li	a3, 9*SZREG // 9*8 on 64b machine. @ 72B you get ~5Gb/s
 	bltu	a2, a3, .Lcpu_memcpy
 
 	// check if they are overlapping
