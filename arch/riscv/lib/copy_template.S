@@ -36,9 +36,9 @@
 	 */
 	add	t5, a0, a2
 
-#define MEMCPY_ACC
-#define USE_REROCC
-#ifdef  MEMCPY_ACC
+// ... CONFIG_MEMCPY_ACC
+// ... CONFIG_USE_REROCC
+#ifdef  CONFIG_MEMCPY_ACC
 	// if size is less than heuristic, use the cpu code
 	// same as below
 	li	a3, 9*SZREG // 9*8 on 64b machine. @ 72B you get ~5Gb/s
@@ -84,14 +84,14 @@
 	//// trigger for debugging
 	//addi x0, x1, 0
 
-#define CFG_ID 15
-#define ACC_ID 1
+// ... CONFIG_CFG_ID
+// ... CONFIG_ACC_ID
 #define OPC 0
 #define CFG_ADDR (0x810 + CFG_ID)
 #define OPC_ADDR (0x800 + OPC)
 #define BAR_ADDR (0x804)
 
-#ifdef USE_REROCC
+#ifdef CONFIG_USE_REROCC
 	// rr_acquire_single
 	li a6, 0x100
 	ori a6, a6, ACC_ID
@@ -127,7 +127,7 @@
 	access REG_L a4, 0(a3)
 	beq x0, a4, .Lwait
 
-#ifdef USE_REROCC
+#ifdef CONFIG_USE_REROCC
 	// rr_fence (clear rerocc TLB) + rr_release
 	csrw BAR_ADDR, CFG_ID
 	csrw CFG_ADDR, x0

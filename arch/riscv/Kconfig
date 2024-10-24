@@ -641,6 +641,22 @@ config RISCV_ROCC
         help
        	  Say N here if you want to disable all non-standard custom instructions
 
+config MEMCPY_ACC
+	bool "Enable memcopy accelerator"
+	default n
+
+config USE_REROCC
+	bool "Use ReRoCC for memcopy accelerator"
+	default y
+
+config CFG_ID
+	int "ReRoCC config id. to check/use"
+	default 15
+
+config ACC_ID
+	int "ReRoCC acc. id. for the memcopy accelerator"
+	default 1
+
 endmenu # "Platform type"
 
 menu "Kernel features"
