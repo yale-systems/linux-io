@@ -87,14 +87,14 @@
 // ... CONFIG_CFG_ID
 // ... CONFIG_ACC_ID
 #define OPC 0
-#define CFG_ADDR (0x810 + CFG_ID)
+#define CFG_ADDR (0x810 + CONFIG_CFG_ID)
 #define OPC_ADDR (0x800 + OPC)
 #define BAR_ADDR (0x804)
 
 #ifdef CONFIG_USE_REROCC
 	// rr_acquire_single
 	li a6, 0x100
-	ori a6, a6, ACC_ID
+	ori a6, a6, CONFIG_ACC_ID
 	csrw CFG_ADDR, a6 // (0x100 | (id & 0xff))
 	csrr a3, CFG_ADDR
 	andi a3, a3, 0x100 // mask with 0x100
@@ -103,7 +103,7 @@
 	beq x0, a3, .Lcpu_memcpy
 
 	// rr_set_opc
-	csrw OPC_ADDR, CFG_ID
+	csrw OPC_ADDR, CONFIG_CFG_ID
 #endif
 
 	// fence (clear accel TLB)
@@ -129,7 +129,7 @@
 
 #ifdef CONFIG_USE_REROCC
 	// rr_fence (clear rerocc TLB) + rr_release
-	csrw BAR_ADDR, CFG_ID
+	csrw BAR_ADDR, CONFIG_CFG_ID
 	csrw CFG_ADDR, x0
 #endif
 
