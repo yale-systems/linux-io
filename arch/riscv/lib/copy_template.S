@@ -41,7 +41,7 @@
 #ifdef  CONFIG_MEMCPY_ACC
 	// if size is less than heuristic, use the cpu code
 	// same as below
-	li	a3, 9*SZREG // 9*8 on 64b machine. @ 72B you get ~5Gb/s
+	li	a3, 30 // in baremetal 30b is roughly the break even point
 	bltu	a2, a3, .Lcpu_memcpy
 
 	// check if they are overlapping
