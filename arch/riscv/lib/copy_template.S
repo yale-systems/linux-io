@@ -44,8 +44,9 @@
 	li	a3, 30 // in baremetal 30b is roughly the break even point
 	bltu	a2, a3, .Lcpu_memcpy
 
-	// check if they are overlapping
-	beq a0, a1, .Lcpu_memcpy
+	// memcpy isn't allowed to overlap
+	/// // check if they are overlapping
+	/// beq a0, a1, .Lcpu_memcpy
 	// have t0 be the lesser value
 	add t0, a0, x0
 	add t1, a1, x0

@@ -17,7 +17,7 @@ ENTRY(__asm_copy_to_user)
 ENTRY(__asm_copy_from_user)
 
 	/* Enable access to user memory */
-	li t6, SR_SUM
+	li t6, (SR_SUM | SR_XS)
 	csrs CSR_STATUS, t6
 
 	.macro access op reg addr
