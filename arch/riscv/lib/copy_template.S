@@ -19,7 +19,7 @@
  * In addition, the macro 'exit' must be defined with the function
  * epilogue.
  *
- * Must also define a temporary variable Ltempvar that can be used for the accelerator if enabled.
+ * Must also define a temporary variable __tempvar that can be used for the accelerator if enabled.
  *
  * The following caller-saved registers are clobbered by this routine:
  * a0-a1, a3-a7, t0-t5 (a2 and t6 are preserved)
@@ -29,6 +29,19 @@
 
 	.altmacro
 	.macro __copy_template
+
+	LOCAL __skip_swap
+	LOCAL __pgin_loop0
+	LOCAL __skip_dst_pgin
+	LOCAL __pgin_loop1
+	LOCAL __skip_src_pgin
+	LOCAL __wait
+	LOCAL __cpu_memcpy
+	LOCAL __skip_align_dst
+	LOCAL __word_copy
+	LOCAL __shift_copy
+	LOCAL __byte_copy_tail
+	LOCAL __out_copy_user
 
 	/*
 	 * Save the terminal address which will be used to compute the number
@@ -42,45 +55,45 @@
 	// if size is less than heuristic, use the cpu code
 	// same as below
 	li	a3, 30 // in baremetal 30b is roughly the break even point
-	bltu	a2, a3, .Lcpu_memcpy
+	bltu	a2, a3, __cpu_memcpy
 
 	// memcpy isn't allowed to overlap
 	/// // check if they are overlapping
-	/// beq a0, a1, .Lcpu_memcpy
+	/// beq a0, a1, __cpu_memcpy
 	// have t0 be the lesser value
 	add t0, a0, x0
 	add t1, a1, x0
-	bltu t0, t1, .Lskip_swap
+	bltu t0, t1, __skip_swap
 	// swap
 	xor t0, t0, t1
 	xor t1, t0, t1
 	xor t0, t0, t1
 
-.Lskip_swap:
+__skip_swap:
 	add t0, t0, a2
-	bgtu t0, t1, .Lcpu_memcpy
+	bgtu t0, t1, __cpu_memcpy
 
 	li a6, 4096
 
 	// touch/pagein dst
 	add a4, a0, 0 // dst copy
 	add a5, a0, a2 // dst + size
-	bleu a5, a4, .Lskip_dst_pgin
-.Lpgin_loop0:
+	bleu a5, a4, __skip_dst_pgin
+__pgin_loop0:
 	access lb      x0, 0(a4)
 	add a4, a4, a6
-	bltu a4, a5, .Lpgin_loop0
+	bltu a4, a5, __pgin_loop0
 
-.Lskip_dst_pgin:
+__skip_dst_pgin:
 	// touch/pagein now src
 	add a4, a1, 0 // src copy
 	add a5, a1, a2 // src + size
-	bleu a5, a4, .Lskip_src_pgin
-.Lpgin_loop1:
+	bleu a5, a4, __skip_src_pgin
+__pgin_loop1:
 	access lb      x0, 0(a4)
 	add a4, a4, a6
-	bltu a4, a5, .Lpgin_loop1
-.Lskip_src_pgin:
+	bltu a4, a5, __pgin_loop1
+__skip_src_pgin:
 
 	//// trigger for debugging
 	//addi x0, x1, 0
@@ -101,7 +114,7 @@
 	andi a3, a3, 0x100 // mask with 0x100
 
 	// if you can't acquire immediately, skip to CPU memcopy
-	beq x0, a3, .Lcpu_memcpy
+	beq x0, a3, __cpu_memcpy
 
 	// rr_set_opc
 	csrw OPC_ADDR, CONFIG_CFG_ID
@@ -115,7 +128,7 @@
 	//ROCC_INSTRUCTION_SS(/*OPC*/0, a1, a2, /*FUNCT*/1)
 	.insn r CUSTOM_0, 3, 1, x0, a1, a2
 	// defined in main .S
-	la a3, .Ltempvar
+	la a3, __tempvar
 	access REG_S x0, 0(a3) // clear temp
 	// ROCC_INSTRUCTION_SS(/*OPC*/0, a0, a3, /*FUNCT*/2)
 	.insn r CUSTOM_0, 3, 2, x0, a0, a3
@@ -123,10 +136,10 @@
 	// blocking
 	//ROCC_INSTRUCTION_D(/*OPC*/0, a4, /*FUNCT*/3)
 	.insn r CUSTOM_0, 4, 3, a4, x0, x0
-.Lwait:
+__wait:
 	fence
 	access REG_L a4, 0(a3)
-	beq x0, a4, .Lwait
+	beq x0, a4, __wait
 
 #ifdef CONFIG_USE_REROCC
 	// rr_fence (clear rerocc TLB) + rr_release
@@ -138,7 +151,7 @@
 
 #endif
 
-.Lcpu_memcpy:
+__cpu_memcpy:
 
 	/*
 	 * Register allocation for code below:
@@ -154,7 +167,7 @@
 	 * SZREG holds 4 for RV32 and 8 for RV64
 	 */
 	li	a3, 9*SZREG /* size must be larger than size in word_copy */
-	bltu	a2, a3, .Lbyte_copy_tail
+	bltu	a2, a3, __byte_copy_tail
 
 	/*
 	 * Copy first bytes until dst is aligned to word boundary.
@@ -164,7 +177,7 @@
 	addi	t1, a0, SZREG-1
 	andi	t1, t1, ~(SZREG-1)
 	/* dst is already aligned, skip */
-	beq	a0, t1, .Lskip_align_dst
+	beq	a0, t1, __skip_align_dst
 1:
 	/* a5 - one byte for copying data */
 	access lb      a5, 0(a1)
@@ -173,7 +186,7 @@
 	addi	a0, a0, 1	/* dst */
 	bltu	a0, t1, 1b	/* t1 - start of aligned dst */
 
-.Lskip_align_dst:
+__skip_align_dst:
 	/*
 	 * Now dst is aligned.
 	 * Use shift-copy if src is misaligned.
@@ -182,9 +195,9 @@
 	 */
 	/* a1 - start of src */
 	andi	a3, a1, SZREG-1
-	bnez	a3, .Lshift_copy
+	bnez	a3, __shift_copy
 
-.Lword_copy:
+__word_copy:
         /*
 	 * Both src and dst are aligned, unrolled word copy
 	 *
@@ -215,9 +228,9 @@
 	bltu	a0, t0, 2b
 
 	addi	t0, t0, 8*SZREG /* revert to original value */
-	j	.Lbyte_copy_tail
+	j	__byte_copy_tail
 
-.Lshift_copy:
+__shift_copy:
 
 	/*
 	 * Word copy with shifting.
@@ -270,7 +283,7 @@
 	/* Revert src to original unaligned value  */
 	add	a1, a1, a3
 
-.Lbyte_copy_tail:
+__byte_copy_tail:
 	/*
 	 * Byte copy anything left.
 	 *
@@ -278,7 +291,7 @@
 	 * a1 - start of remaining src
 	 * t0 - end of remaining dst
 	 */
-	bgeu	a0, t0, .Lout_copy_user  /* check if end of copy */
+	bgeu	a0, t0, __out_copy_user  /* check if end of copy */
 4:
 	access lb      a5, 0(a1)
 	addi	a1, a1, 1	/* src */
@@ -286,7 +299,7 @@
 	addi	a0, a0, 1	/* dst */
 	bltu	a0, t0, 4b	/* t0 - end of dst */
 
-.Lout_copy_user:
+__out_copy_user:
 	exit
 
 	.endm /* __copy_template */

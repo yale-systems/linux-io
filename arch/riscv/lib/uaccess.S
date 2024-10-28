@@ -4,7 +4,6 @@
 #include <asm/asm-extable.h>
 #include <asm/csr.h>
 
-#include "copy_template.S"
 
 	.macro fixup op reg addr lbl
 100:
@@ -15,6 +14,8 @@
 
 ENTRY(__asm_copy_to_user)
 ENTRY(__asm_copy_from_user)
+
+#include "copy_template.S"
 
 	/* Enable access to user memory */
 	li t6, (SR_SUM | SR_XS)
@@ -96,5 +97,5 @@ EXPORT_SYMBOL(__clear_user)
 
 .data
 .balign 8
-.Ltempvar:
+__tempvar:
 	.long 0
