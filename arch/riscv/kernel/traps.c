@@ -109,6 +109,8 @@ void do_trap(struct pt_regs *regs, int signo, int code, unsigned long addr)
 		__show_regs(regs);
 	}
 
+	__asm__ __volatile__ ("addi x0, x2, 0");
+
 	force_sig_fault(signo, code, (void __user *)addr);
 }
 

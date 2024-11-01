@@ -10,6 +10,7 @@
 
 #include <asm/asm-extable.h>
 #include <asm/pgtable.h>		/* for TASK_SIZE */
+#include <asm/rerocc.h>
 
 /*
  * User space memory access functions
@@ -290,16 +291,107 @@ unsigned long __must_check __asm_copy_to_user(void __user *to,
 unsigned long __must_check __asm_copy_from_user(void *to,
 	const void __user *from, unsigned long n);
 
+void __asm_accel_status_unset(void);
+void __asm_accel_status_set(void);
+
+// ... CONFIG_USE_REROCC
+// ... CONFIG_CFG_ID
+// ... CONFIG_ACC_ID
+#define OPC 0
+#define CFG_ADDR (0x810 + CONFIG_CFG_ID)
+#define OPC_ADDR (0x800 + OPC)
+#define BAR_ADDR (0x804)
+static inline bool do_acc(void *to, const void __user *from, unsigned long n) {
+	// only do if it's the break even point
+	if (n < 30) {
+		return false;
+	}
+
+	__asm_accel_status_set();
+
+	char* src = (char*)from;
+	char* dst = (char*)to;
+
+	// page-in memory
+	for (size_t i = 0; i < n; i += 4096) {
+		src[i] = 0;
+		dst[i] = 0;
+	}
+
+#ifdef CONFIG_USE_REROCC
+	if (!rr_acquire_single(CONFIG_CFG_ID, CONFIG_ACC_ID)) {
+		return false;
+	}
+
+	rr_set_opc(OPC, CONFIG_CFG_ID);
+	rr_fence(CONFIG_CFG_ID);
+#endif
+
+	volatile int completion_flag = 0;
+
+	ROCC_INSTRUCTION(OPC, 0);
+	ROCC_INSTRUCTION_SS(OPC, (uint64_t)src, (uint64_t)n, 1);
+	ROCC_INSTRUCTION_SS(OPC, (uint64_t)dst, (uint64_t)(&completion_flag), 2);
+	uint64_t retval;
+	ROCC_INSTRUCTION_D(OPC, retval, 3);
+
+	__asm__ __volatile__ ("fence");
+
+	while (!completion_flag) {
+		__asm__ __volatile__ ("fence");
+	}
+
+#ifdef CONFIG_USE_REROCC
+	rr_release(CONFIG_CFG_ID);
+#endif
+
+	__asm_accel_status_unset();
+
+	return true;
+}
+
+// ... CONFIG_MEMCPY_ACC
 static inline unsigned long
 raw_copy_from_user(void *to, const void __user *from, unsigned long n)
 {
-	return __asm_copy_from_user(to, from, n);
+#ifdef  CONFIG_MEMCPY_ACC
+	if (!do_acc(to, from, n)) {
+#endif
+		return __asm_copy_from_user(to, from, n);
+#ifdef  CONFIG_MEMCPY_ACC
+	} else {
+		return 0;
+	}
+#endif
+
+	// unsigned long ret = __asm_copy_from_user(to, from, n);
+	// // TODO: add stuff here
+	// if (ret == ((unsigned long)-1)) {
+	// 	__asm__ __volatile__ ("addi x0, x2, 0");
+	// 	pr_info("ERR: CFU: %p<-%p %ld\n", to, from, n);
+	// }
+	// return ret;
 }
 
 static inline unsigned long
 raw_copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	return __asm_copy_to_user(to, from, n);
+#ifdef  CONFIG_MEMCPY_ACC
+	if (!do_acc(to, from, n)) {
+#endif
+		return __asm_copy_to_user(to, from, n);
+#ifdef  CONFIG_MEMCPY_ACC
+	} else {
+		return 0;
+	}
+#endif
+
+	// unsigned long ret = __asm_copy_to_user(to, from, n);
+	// if (ret == ((unsigned long)-1)) {
+	// 	__asm__ __volatile__ ("addi x0, x2, 0");
+	// 	pr_info("ERR: CTU: %p<-%p %ld\n", to, from, n);
+	// }
+	// return ret;
 }
 
 extern long strncpy_from_user(char *dest, const char __user *src, long count);

@@ -48,30 +48,35 @@
 	 * of bytes copied in case of a access exception.
 	 */
 	add	t5, a0, a2
+	addi    t0, a1, 0
 
 // ... CONFIG_MEMCPY_ACC
 // ... CONFIG_USE_REROCC
 #ifdef  CONFIG_MEMCPY_ACC
+
 	// if size is less than heuristic, use the cpu code
 	// same as below
 	li	a3, 30 // in baremetal 30b is roughly the break even point
 	bltu	a2, a3, __cpu_memcpy
 
-	// memcpy isn't allowed to overlap
-	/// // check if they are overlapping
-	/// beq a0, a1, __cpu_memcpy
-	// have t0 be the lesser value
-	add t0, a0, x0
-	add t1, a1, x0
-	bltu t0, t1, __skip_swap
-	// swap
-	xor t0, t0, t1
-	xor t1, t0, t1
-	xor t0, t0, t1
+	// trigger for debugging
+	addi x0, x1, 0
 
-__skip_swap:
-	add t0, t0, a2
-	bgtu t0, t1, __cpu_memcpy
+	// memcpy allowed to overlap (but gives undef result)
+	/// // check if they are overlapping
+//	/// beq a0, a1, __cpu_memcpy
+//	// have a3 be the lesser value
+//	add a3, a0, x0
+//	add t1, a1, x0
+//	bltu a3, t1, __skip_swap
+//	// swap
+//	xor a3, a3, t1
+//	xor t1, a3, t1
+//	xor a3, a3, t1
+//
+//__skip_swap:
+//	add a3, a3, a2
+//	bgtu a3, t1, __cpu_memcpy
 
 	li a6, 4096
 
@@ -94,9 +99,6 @@ __pgin_loop1:
 	add a4, a4, a6
 	bltu a4, a5, __pgin_loop1
 __skip_src_pgin:
-
-	//// trigger for debugging
-	//addi x0, x1, 0
 
 // ... CONFIG_CFG_ID
 // ... CONFIG_ACC_ID
@@ -147,8 +149,37 @@ __wait:
 	csrw CFG_ADDR, x0
 #endif
 
+	/* check copy was successful */
+	sub	a0, t5, a2
+	addi a4, a2, 0
+	addi a5, t0, 0
+	addi t1, a0, 0
+	// t0 has a1
+	// t1 has a0
+	// a4 has a2
+.Lcheckloop:
+	access lb      t2, 0(t0)
+	access lb      t3, 0(t1)
+	bne t2, t3, .Lbroken_memcpy
+	addi t0, t0, 1
+	addi t1, t1, 1
+	addi a2, a2, -1
+	bne x0, a2, .Lcheckloop
 	exit
 
+.Lbroken_memcpy:
+	// // instead of exiting just do the cpu version
+	// csrc CSR_STATUS, t6
+	// li t6, SR_XS_INITIAL
+	// csrs CSR_STATUS, t6
+	// li a0, -1 // dummy value
+	// addi x0, x2, 0
+	// ret
+
+	addi	a2, a4, 0 // reget a2
+	addi	a1, a5, 0 // reget a1
+	sub	a0, t5, a2 // reget a0
+	// fall into the cpu memcpy
 #endif
 
 __cpu_memcpy:
