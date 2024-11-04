@@ -1,14 +1,8 @@
 #ifndef REROCC_H
 #define REROCC_H
 
-#if !defined(__x86_64__)
-
-#include <stdint.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include "rocc.h"
+#include <linux/types.h>
+#include <asm/rocc.h>
 
 #define read_csr(reg) ({ unsigned long __tmp; \
   __asm__ __volatile__ ("csrr %0, " #reg : "=r"(__tmp)); \
@@ -84,7 +78,7 @@ static inline uint64_t swap_rr_csr(uint64_t cfgId, uint64_t wdata) {
 #define F(c) case c: { ret = swap_csr(c, wdata); break; }
     LIST_OF_RR_CSRS
 #undef F
-  default: { printf("swap_rr_csr illegal csr %lx\n", cfgId); abort(); }
+  default: { pr_err("swap_rr_csr illegal csr %llx\n", cfgId); abort(); }
   }
   return ret;
 }
@@ -95,7 +89,7 @@ static inline uint64_t read_rr_csr(uint64_t cfgId) {
 #define F(c) case c: { ret = read_csr(c); break; }
     LIST_OF_RR_CSRS
 #undef F
-  default: { printf("read_rr_csr illegal csr %lx\n", cfgId); abort(); }
+  default: { pr_err("read_rr_csr illegal csr %llx\n", cfgId); abort(); }
   }
   return ret;
 }
@@ -104,7 +98,7 @@ static inline void write_rr_csr(uint64_t cfgId, uint64_t wdata) {
   swap_rr_csr(cfgId, wdata);
 }
 
-static bool rr_acquire_single(uint32_t cfgId, uint64_t accelId) {
+static inline bool rr_acquire_single(uint32_t cfgId, uint64_t accelId) {
   uint32_t csrid = CSR_RRCFG0 + cfgId;
   uint64_t w = RR_CFG_ACQ_MASK | (accelId & RR_CFG_MGR_MASK);
   write_rr_csr(csrid, w);
@@ -112,7 +106,7 @@ static bool rr_acquire_single(uint32_t cfgId, uint64_t accelId) {
 }
 
 // -1 indicate one not available
-static int32_t rr_viable_cfgid() {
+static inline int32_t rr_viable_cfgid(void) {
   for (size_t i = 0; i < 16; ++i) {
     uint32_t csrid = CSR_RRCFG0 + i;
     if ((read_rr_csr(csrid) & RR_CFG_ACQ_MASK) == 0) {
@@ -122,7 +116,7 @@ static int32_t rr_viable_cfgid() {
   return -1;
 }
 
-static bool rr_is_viable_opcode(uint8_t opc, uint32_t wantedCfgId) {
+static inline bool rr_is_viable_opcode(uint8_t opc, uint32_t wantedCfgId) {
   // returns the cfgId mapped to the input opc wanted
   uint32_t cfgId = read_rr_csr(CSR_RROPC0 + opc);
   if (cfgId == wantedCfgId) {
@@ -133,27 +127,25 @@ static bool rr_is_viable_opcode(uint8_t opc, uint32_t wantedCfgId) {
   }
 }
 
-static void rr_release(uint32_t cfgId) {
+static inline void rr_release(uint32_t cfgId) {
   uint32_t csrid = CSR_RRCFG0 + cfgId;
   uint64_t w = 0;
   write_rr_csr(csrid, w);
 }
 
-static bool rr_acquire_multi(uint32_t cfgId, uint64_t* accelIds, size_t n) {
+static inline bool rr_acquire_multi(uint32_t cfgId, uint64_t* accelIds, size_t n) {
   for (size_t i = 0; i < n; i++)
     if (rr_acquire_single(cfgId, accelIds[i])) return true;
   return false;
 }
 
-static void rr_set_opc(uint8_t opc, uint32_t cfgId) {
+static inline void rr_set_opc(uint8_t opc, uint32_t cfgId) {
   write_rr_csr(CSR_RROPC0 + opc, cfgId);
 }
 
-static void rr_fence(uint32_t cfgId) {
+static inline void rr_fence(uint32_t cfgId) {
   write_rr_csr(CSR_RRBAR, cfgId);
   __asm__ __volatile__("fence");
 }
-
-#endif
 
 #endif

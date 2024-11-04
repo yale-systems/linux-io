@@ -4,64 +4,14 @@
 #include <asm/asm-extable.h>
 #include <asm/csr.h>
 
-
 	.macro fixup op reg addr lbl
 100:
 	\op \reg, \addr
 	_asm_extable	100b, \lbl
 	.endm
 
-ENTRY(__clear_user)
-
-	/* Enable fixup to user memory */
-	li t6, SR_SUM
-	csrs CSR_STATUS, t6
-
-	add a3, a0, a1
-	addi t0, a0, SZREG-1
-	andi t1, a3, ~(SZREG-1)
-	andi t0, t0, ~(SZREG-1)
-	/*
-	 * a3: terminal address of target region
-	 * t0: lowest doubleword-aligned address in target region
-	 * t1: highest doubleword-aligned address in target region
-	 */
-	bgeu t0, t1, 2f
-	bltu a0, t0, 4f
-1:
-	fixup REG_S, zero, (a0), 11f
-	addi a0, a0, SZREG
-	bltu a0, t1, 1b
-2:
-	bltu a0, a3, 5f
-
-3:
-	/* Disable fixup to user memory */
-	csrc CSR_STATUS, t6
-	li a0, 0
-	ret
-4: /* Edge case: unalignment */
-	fixup sb, zero, (a0), 11f
-	addi a0, a0, 1
-	bltu a0, t0, 4b
-	j 1b
-5: /* Edge case: remainder */
-	fixup sb, zero, (a0), 11f
-	addi a0, a0, 1
-	bltu a0, a3, 5b
-	j 3b
-
-	/* Exception fixup code */
-11:
-	/* Disable fixup to user memory */
-	csrc CSR_STATUS, t6
-	sub a0, a3, a0
-	ret
-ENDPROC(__clear_user)
-EXPORT_SYMBOL(__clear_user)
-
 ENTRY(__asm_accel_status_set)
-	/* Enable fixup to user memory */
+	/* Enable access to user memory */
 	li t6, (SR_SUM | SR_XS_INITIAL)
 	csrs CSR_STATUS, t6
 	ret
@@ -69,7 +19,7 @@ ENDPROC(__asm_accel_status_set)
 EXPORT_SYMBOL(__asm_accel_status_set)
 
 ENTRY(__asm_accel_status_unset)
-	/* Disable fixup to user memory */
+	/* Disable access to user memory */
 	li t6, SR_SUM
 	csrc CSR_STATUS, t6
 	/* Keep RoCC enabled */
@@ -82,9 +32,15 @@ EXPORT_SYMBOL(__asm_accel_status_unset)
 ENTRY(__asm_copy_to_user)
 ENTRY(__asm_copy_from_user)
 
-	/* Enable fixup to user memory */
+	/* Enable access to user memory */
 	li t6, SR_SUM
 	csrs CSR_STATUS, t6
+
+	/*
+	 * Save the terminal address which will be used to compute the number
+	 * of bytes copied in case of a fixup exception.
+	 */
+	add	t5, a0, a2
 
 	/*
 	 * Register allocation for code below:
@@ -100,7 +56,7 @@ ENTRY(__asm_copy_from_user)
 	 * SZREG holds 4 for RV32 and 8 for RV64
 	 */
 	li	a3, 9*SZREG /* size must be larger than size in word_copy */
-	bltu	a2, a3, __byte_copy_tail
+	bltu	a2, a3, .Lbyte_copy_tail
 
 	/*
 	 * Copy first bytes until dst is aligned to word boundary.
@@ -110,16 +66,16 @@ ENTRY(__asm_copy_from_user)
 	addi	t1, a0, SZREG-1
 	andi	t1, t1, ~(SZREG-1)
 	/* dst is already aligned, skip */
-	beq	a0, t1, __skip_align_dst
+	beq	a0, t1, .Lskip_align_dst
 1:
 	/* a5 - one byte for copying data */
-	fixup lb      a5, 0(a1)
+	fixup lb      a5, 0(a1), 10f
 	addi	a1, a1, 1	/* src */
-	fixup sb      a5, 0(a0)
+	fixup sb      a5, 0(a0), 10f
 	addi	a0, a0, 1	/* dst */
 	bltu	a0, t1, 1b	/* t1 - start of aligned dst */
 
-__skip_align_dst:
+.Lskip_align_dst:
 	/*
 	 * Now dst is aligned.
 	 * Use shift-copy if src is misaligned.
@@ -128,9 +84,9 @@ __skip_align_dst:
 	 */
 	/* a1 - start of src */
 	andi	a3, a1, SZREG-1
-	bnez	a3, __shift_copy
+	bnez	a3, .Lshift_copy
 
-__word_copy:
+.Lword_copy:
         /*
 	 * Both src and dst are aligned, unrolled word copy
 	 *
@@ -140,30 +96,30 @@ __word_copy:
 	 */
 	addi	t0, t0, -(8*SZREG) /* not to over run */
 2:
-	fixup REG_L   a4,        0(a1)
-	fixup REG_L   a5,    SZREG(a1)
-	fixup REG_L   a6,  2*SZREG(a1)
-	fixup REG_L   a7,  3*SZREG(a1)
-	fixup REG_L   t1,  4*SZREG(a1)
-	fixup REG_L   t2,  5*SZREG(a1)
-	fixup REG_L   t3,  6*SZREG(a1)
-	fixup REG_L   t4,  7*SZREG(a1)
-	fixup REG_S   a4,        0(a0)
-	fixup REG_S   a5,    SZREG(a0)
-	fixup REG_S   a6,  2*SZREG(a0)
-	fixup REG_S   a7,  3*SZREG(a0)
-	fixup REG_S   t1,  4*SZREG(a0)
-	fixup REG_S   t2,  5*SZREG(a0)
-	fixup REG_S   t3,  6*SZREG(a0)
-	fixup REG_S   t4,  7*SZREG(a0)
+	fixup REG_L   a4,        0(a1), 10f
+	fixup REG_L   a5,    SZREG(a1), 10f
+	fixup REG_L   a6,  2*SZREG(a1), 10f
+	fixup REG_L   a7,  3*SZREG(a1), 10f
+	fixup REG_L   t1,  4*SZREG(a1), 10f
+	fixup REG_L   t2,  5*SZREG(a1), 10f
+	fixup REG_L   t3,  6*SZREG(a1), 10f
+	fixup REG_L   t4,  7*SZREG(a1), 10f
+	fixup REG_S   a4,        0(a0), 10f
+	fixup REG_S   a5,    SZREG(a0), 10f
+	fixup REG_S   a6,  2*SZREG(a0), 10f
+	fixup REG_S   a7,  3*SZREG(a0), 10f
+	fixup REG_S   t1,  4*SZREG(a0), 10f
+	fixup REG_S   t2,  5*SZREG(a0), 10f
+	fixup REG_S   t3,  6*SZREG(a0), 10f
+	fixup REG_S   t4,  7*SZREG(a0), 10f
 	addi	a0, a0, 8*SZREG
 	addi	a1, a1, 8*SZREG
 	bltu	a0, t0, 2b
 
 	addi	t0, t0, 8*SZREG /* revert to original value */
-	j	__byte_copy_tail
+	j	.Lbyte_copy_tail
 
-__shift_copy:
+.Lshift_copy:
 
 	/*
 	 * Word copy with shifting.
@@ -193,7 +149,7 @@ __shift_copy:
 	sub	t4, a5, t3
 
 	/* Load the first word to combine with second word */
-	fixup REG_L   a5, 0(a1)
+	fixup REG_L   a5, 0(a1), 10f
 
 3:
 	/* Main shifting copy
@@ -205,18 +161,18 @@ __shift_copy:
 
 	/* At least one iteration will be executed */
 	srl	a4, a5, t3
-	fixup REG_L   a5, SZREG(a1)
+	fixup REG_L   a5, SZREG(a1), 10f
 	addi	a1, a1, SZREG
 	sll	a2, a5, t4
 	or	a2, a2, a4
-	fixup REG_S   a2, 0(a0)
+	fixup REG_S   a2, 0(a0), 10f
 	addi	a0, a0, SZREG
 	bltu	a0, t1, 3b
 
 	/* Revert src to original unaligned value  */
 	add	a1, a1, a3
 
-__byte_copy_tail:
+.Lbyte_copy_tail:
 	/*
 	 * Byte copy anything left.
 	 *
@@ -224,24 +180,24 @@ __byte_copy_tail:
 	 * a1 - start of remaining src
 	 * t0 - end of remaining dst
 	 */
-	bgeu	a0, t0, __out_copy_user  /* check if end of copy */
+	bgeu	a0, t0, .Lout_copy_user  /* check if end of copy */
 4:
-	fixup lb      a5, 0(a1)
+	fixup lb      a5, 0(a1), 10f
 	addi	a1, a1, 1	/* src */
-	fixup sb      a5, 0(a0)
+	fixup sb      a5, 0(a0), 10f
 	addi	a0, a0, 1	/* dst */
 	bltu	a0, t0, 4b	/* t0 - end of dst */
 
-__out_copy_user:
-	exit
-
+.Lout_copy_user:
+	/* Disable access to user memory */
+	csrc CSR_STATUS, t6
+	li	a0, 0
+	ret
 
 	/* Exception fixup code */
 10:
-	/* Disable fixup to user memory */
+	/* Disable access to user memory */
 	csrc CSR_STATUS, t6
-	li t6, SR_XS_INITIAL
-	csrs CSR_STATUS, t6
 	sub a0, t5, a0
 	ret
 ENDPROC(__asm_copy_to_user)
@@ -252,7 +208,7 @@ EXPORT_SYMBOL(__asm_copy_from_user)
 
 ENTRY(__clear_user)
 
-	/* Enable fixup to user memory */
+	/* Enable access to user memory */
 	li t6, SR_SUM
 	csrs CSR_STATUS, t6
 
@@ -275,7 +231,7 @@ ENTRY(__clear_user)
 	bltu a0, a3, 5f
 
 3:
-	/* Disable fixup to user memory */
+	/* Disable access to user memory */
 	csrc CSR_STATUS, t6
 	li a0, 0
 	ret
@@ -292,7 +248,7 @@ ENTRY(__clear_user)
 
 	/* Exception fixup code */
 11:
-	/* Disable fixup to user memory */
+	/* Disable access to user memory */
 	csrc CSR_STATUS, t6
 	sub a0, a3, a0
 	ret

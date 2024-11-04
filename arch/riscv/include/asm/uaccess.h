@@ -11,6 +11,7 @@
 #include <asm/asm-extable.h>
 #include <asm/pgtable.h>		/* for TASK_SIZE */
 #include <asm/rerocc.h>
+#include <asm/csr.h>
 
 /*
  * User space memory access functions
@@ -301,7 +302,9 @@ void __asm_accel_status_set(void);
 #define CFG_ADDR (0x810 + CONFIG_CFG_ID)
 #define OPC_ADDR (0x800 + OPC)
 #define BAR_ADDR (0x804)
-static inline bool do_acc(void *to, const void __user *from, unsigned long n) {
+static inline bool do_acc(void *to, const void *from, unsigned long n, bool copyto) {
+	pr_info("INFO: do_acc %p %p %lu\n", to, from, n);
+
 	// only do if it's the break even point
 	if (n < 30) {
 		return false;
@@ -314,9 +317,14 @@ static inline bool do_acc(void *to, const void __user *from, unsigned long n) {
 
 	// page-in memory
 	for (size_t i = 0; i < n; i += 4096) {
-		src[i] = 0;
+		//src[i];
 		dst[i] = 0;
 	}
+
+	// if (copyto) {
+	// 	size_t mhartid = read_csr(0xf14);
+	// 	pr_info("INFO: Running on %lu\n", mhartid);
+	// }
 
 #ifdef CONFIG_USE_REROCC
 	if (!rr_acquire_single(CONFIG_CFG_ID, CONFIG_ACC_ID)) {
@@ -327,27 +335,39 @@ static inline bool do_acc(void *to, const void __user *from, unsigned long n) {
 	rr_fence(CONFIG_CFG_ID);
 #endif
 
-	volatile int completion_flag = 0;
+	volatile uint64_t completion_flag = 0;
 
-	ROCC_INSTRUCTION(OPC, 0);
+	//__asm__ __volatile__ ("addi x0, x1, 0");
 	ROCC_INSTRUCTION_SS(OPC, (uint64_t)src, (uint64_t)n, 1);
 	ROCC_INSTRUCTION_SS(OPC, (uint64_t)dst, (uint64_t)(&completion_flag), 2);
 	uint64_t retval;
 	ROCC_INSTRUCTION_D(OPC, retval, 3);
 
 	__asm__ __volatile__ ("fence");
-
 	while (!completion_flag) {
 		__asm__ __volatile__ ("fence");
 	}
+
+	ROCC_INSTRUCTION(OPC, 0);
 
 #ifdef CONFIG_USE_REROCC
 	rr_release(CONFIG_CFG_ID);
 #endif
 
-	__asm_accel_status_unset();
+	// // double-check
+	bool fail = false;
+	// for (size_t i = 0; i < n; ++i) {
+	// 	if (src[i] != dst[i]) {
+	// 		fail = true;
+	// 		pr_info("ERR: I:%lu broken\n", i);
+	// 		break;
+	// 	}
+	// }
 
-	return true;
+	__asm_accel_status_unset();
+	pr_info("INFO: acc comp\n");
+
+	return !fail;
 }
 
 // ... CONFIG_MEMCPY_ACC
@@ -355,7 +375,7 @@ static inline unsigned long
 raw_copy_from_user(void *to, const void __user *from, unsigned long n)
 {
 #ifdef  CONFIG_MEMCPY_ACC
-	if (!do_acc(to, from, n)) {
+	if (!do_acc(to, from, n, false)) {
 #endif
 		return __asm_copy_from_user(to, from, n);
 #ifdef  CONFIG_MEMCPY_ACC
@@ -377,7 +397,7 @@ static inline unsigned long
 raw_copy_to_user(void __user *to, const void *from, unsigned long n)
 {
 #ifdef  CONFIG_MEMCPY_ACC
-	if (!do_acc(to, from, n)) {
+	if (!do_acc(to, from, n, true)) {
 #endif
 		return __asm_copy_to_user(to, from, n);
 #ifdef  CONFIG_MEMCPY_ACC

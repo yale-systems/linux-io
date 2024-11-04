@@ -1,8 +1,6 @@
 #ifndef SRC_MAIN_C_ROCC_H
 #define SRC_MAIN_C_ROCC_H
 
-#if !defined(__x86_64__)
-
 // Standard macro that passes rd, rs1, and rs2 via registers
 #define ROCC_INSTRUCTION_DSS(X, rd, rs1, rs2, funct) \
     ROCC_INSTRUCTION_R_R_R(X, rd, rs1, rs2, funct)
@@ -83,7 +81,5 @@
             : "K" (rd), "K" (rs1), "K" (rs2),                           \
               "i" (0), "i" (funct));                                    \
     } while (0)
-
-#endif
 
 #endif // SRC_MAIN_C_ROCC_H
