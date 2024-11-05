@@ -29,6 +29,45 @@ ENTRY(__asm_accel_status_unset)
 ENDPROC(__asm_accel_status_unset)
 EXPORT_SYMBOL(__asm_accel_status_unset)
 
+ENTRY(__asm_touch_to_user)
+ENTRY(__asm_touch_from_user)
+        // * Arguments:
+        // *	a0: dest
+        // *	a1: src
+        // *	a2: n
+
+	beq x0, a2, .Ltouch_end
+
+	li a3, 4096 // PGSZ
+
+	// touch/pagein dst
+	mv a4, a0 // dst copy
+	add a5, a0, a2 // dst + size
+.Lpgin_loop0:
+	fixup lb x0, 0(a4), 12f
+	add a4, a4, a3
+	bltu a4, a5, .Lpgin_loop0
+
+	// touch/pagein now src
+	mv a4, a1 // src copy
+	add a5, a1, a2 // src + size
+.Lpgin_loop1:
+	fixup lb x0, 0(a4), 12f
+	add a4, a4, a3
+	bltu a4, a5, .Lpgin_loop1
+.Ltouch_end:
+	li a0, 1
+	ret
+
+	/* Exception fixup code */
+12:
+	li a0, 0
+	ret
+ENDPROC(__asm_touch_to_user)
+ENDPROC(__asm_touch_from_user)
+EXPORT_SYMBOL(__asm_touch_to_user)
+EXPORT_SYMBOL(__asm_touch_from_user)
+
 ENTRY(__asm_copy_to_user)
 ENTRY(__asm_copy_from_user)
 

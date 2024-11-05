@@ -295,6 +295,11 @@ unsigned long __must_check __asm_copy_from_user(void *to,
 void __asm_accel_status_unset(void);
 void __asm_accel_status_set(void);
 
+unsigned long __must_check __asm_touch_to_user(void __user *to,
+	const void *from, unsigned long n);
+unsigned long __must_check __asm_touch_from_user(void *to,
+	const void __user *from, unsigned long n);
+
 // ... CONFIG_USE_REROCC
 // ... CONFIG_CFG_ID
 // ... CONFIG_ACC_ID
@@ -302,8 +307,8 @@ void __asm_accel_status_set(void);
 #define CFG_ADDR (0x810 + CONFIG_CFG_ID)
 #define OPC_ADDR (0x800 + OPC)
 #define BAR_ADDR (0x804)
-static inline bool do_acc(void *to, const void *from, unsigned long n, bool copyto) {
-	pr_info("INFO: do_acc %p %p %lu\n", to, from, n);
+static inline bool do_acc(void __user *user, void *kernel, unsigned long n, bool user_to_kernel) {
+	pr_info("INFO: do_acc: u:%p k:%p l:%lu du2k:%d\n", user, kernel, n, user_to_kernel);
 
 	// only do if it's the break even point
 	if (n < 30) {
@@ -312,27 +317,33 @@ static inline bool do_acc(void *to, const void *from, unsigned long n, bool copy
 
 	__asm_accel_status_set();
 
-	char* src = (char*)from;
-	char* dst = (char*)to;
-
-	// page-in memory
-	for (size_t i = 0; i < n; i += 4096) {
-		//src[i];
-		dst[i] = 0;
+	// done in assembly to properly catch exceptions for mem. accesses
+	bool passed;
+	if (user_to_kernel) {
+		passed = __asm_touch_from_user(kernel, user, n);
+	} else {
+		passed = __asm_touch_to_user(user, kernel, n);
+	}
+	pr_info("INFO: touched\n");
+	if (!passed) {
+		__asm_accel_status_unset();
+		return false;
 	}
 
-	// if (copyto) {
-	// 	size_t mhartid = read_csr(0xf14);
-	// 	pr_info("INFO: Running on %lu\n", mhartid);
-	// }
+	volatile char* src = user_to_kernel ? (volatile char*)user : (volatile char*)kernel;
+	volatile char* dst = user_to_kernel ? (volatile char*)kernel : (volatile char*)user;
 
 #ifdef CONFIG_USE_REROCC
 	if (!rr_acquire_single(CONFIG_CFG_ID, CONFIG_ACC_ID)) {
 		return false;
 	}
 
+	pr_info("INFO: acquired\n");
+
 	rr_set_opc(OPC, CONFIG_CFG_ID);
 	rr_fence(CONFIG_CFG_ID);
+
+	pr_info("INFO: opc + fence\n");
 #endif
 
 	volatile uint64_t completion_flag = 0;
@@ -343,16 +354,22 @@ static inline bool do_acc(void *to, const void *from, unsigned long n, bool copy
 	uint64_t retval;
 	ROCC_INSTRUCTION_D(OPC, retval, 3);
 
+	pr_info("INFO: ask4comp\n");
+
 	__asm__ __volatile__ ("fence");
 	while (!completion_flag) {
 		__asm__ __volatile__ ("fence");
 	}
+
+	pr_info("INFO: afterw\n");
 
 	ROCC_INSTRUCTION(OPC, 0);
 
 #ifdef CONFIG_USE_REROCC
 	rr_release(CONFIG_CFG_ID);
 #endif
+
+	pr_info("INFO: post fence\n");
 
 	// // double-check
 	bool fail = false;
@@ -375,7 +392,7 @@ static inline unsigned long
 raw_copy_from_user(void *to, const void __user *from, unsigned long n)
 {
 #ifdef  CONFIG_MEMCPY_ACC
-	if (!do_acc(to, from, n, false)) {
+	if (!do_acc((void*)from, to, n, true)) {
 #endif
 		return __asm_copy_from_user(to, from, n);
 #ifdef  CONFIG_MEMCPY_ACC
@@ -383,21 +400,13 @@ raw_copy_from_user(void *to, const void __user *from, unsigned long n)
 		return 0;
 	}
 #endif
-
-	// unsigned long ret = __asm_copy_from_user(to, from, n);
-	// // TODO: add stuff here
-	// if (ret == ((unsigned long)-1)) {
-	// 	__asm__ __volatile__ ("addi x0, x2, 0");
-	// 	pr_info("ERR: CFU: %p<-%p %ld\n", to, from, n);
-	// }
-	// return ret;
 }
 
 static inline unsigned long
 raw_copy_to_user(void __user *to, const void *from, unsigned long n)
 {
 #ifdef  CONFIG_MEMCPY_ACC
-	if (!do_acc(to, from, n, true)) {
+	if (!do_acc(to, (void*)from, n, false)) {
 #endif
 		return __asm_copy_to_user(to, from, n);
 #ifdef  CONFIG_MEMCPY_ACC
@@ -405,13 +414,6 @@ raw_copy_to_user(void __user *to, const void *from, unsigned long n)
 		return 0;
 	}
 #endif
-
-	// unsigned long ret = __asm_copy_to_user(to, from, n);
-	// if (ret == ((unsigned long)-1)) {
-	// 	__asm__ __volatile__ ("addi x0, x2, 0");
-	// 	pr_info("ERR: CTU: %p<-%p %ld\n", to, from, n);
-	// }
-	// return ret;
 }
 
 extern long strncpy_from_user(char *dest, const char __user *src, long count);
