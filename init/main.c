@@ -1490,6 +1490,11 @@ static int __ref kernel_init(void *unused)
 			return 0;
 	}
 
+	pr_info("Doing checkpoint\n");
+	console_unlock();
+	flush_tlb_all();
+	asm ("addi x0, x3, 0"); // for checkpointing (devices - other than UART - are init'ed after this)
+
 	if (!try_to_run_init_process("/sbin/init") ||
 	    !try_to_run_init_process("/etc/init") ||
 	    !try_to_run_init_process("/bin/init") ||
