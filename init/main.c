@@ -1461,6 +1461,7 @@ static int __ref kernel_init(void *unused)
 
 	pr_info("Doing checkpoint\n");
 	console_unlock();
+	asm ("addi x0, x4, 0"); // for checkpointing (devices - other than UART - are init'ed after this)
 	flush_tlb_all();
 	asm ("addi x0, x3, 0"); // for checkpointing (devices - other than UART - are init'ed after this)
 
