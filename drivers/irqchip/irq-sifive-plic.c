@@ -430,12 +430,8 @@ static int __init __plic_init(struct device_node *node,
 
 	error = -EINVAL;
 	of_property_read_u32(node, "riscv,ndev", &nr_irqs);
-	printk("ABEDEBUG: Got %d\n", nr_irqs);
-	if (WARN_ON(!nr_irqs)) {
-		printk("ABEDEBUG: Warned : Got %d\n", nr_irqs);
+	if (WARN_ON(!nr_irqs))
 		goto out_iounmap;
-	}
-	printk("ABEDEBUG: Got %d\n", nr_irqs);
 
 	priv->nr_irqs = nr_irqs;
 

@@ -161,6 +161,8 @@ SYM_CODE_START_NOALIGN(ret_from_exception)
 
 	REG_L x2,  PT_SP(sp)
 
+	//sfence.vma // ensure anytime the kernel modifies a pte we flush the tlb (very aggressive)
+
 #ifdef CONFIG_RISCV_M_MODE
 	mret
 #else

@@ -1343,13 +1343,13 @@ static int run_init_process(const char *init_filename)
 	const char *const *p;
 
 	argv_init[0] = init_filename;
-	pr_info("Run %s as init process\n", init_filename);
-	pr_debug("  with arguments:\n");
-	for (p = argv_init; *p; p++)
-		pr_debug("    %s\n", *p);
-	pr_debug("  with environment:\n");
-	for (p = envp_init; *p; p++)
-		pr_debug("    %s\n", *p);
+	// pr_info("Run %s as init process\n", init_filename);
+	// pr_debug("  with arguments:\n");
+	// for (p = argv_init; *p; p++)
+	// 	pr_debug("    %s\n", *p);
+	// pr_debug("  with environment:\n");
+	// for (p = envp_init; *p; p++)
+	// 	pr_debug("    %s\n", *p);
 	return kernel_execve(init_filename, argv_init, envp_init);
 }
 
@@ -1459,11 +1459,11 @@ static int __ref kernel_init(void *unused)
 
 	do_sysctl_args();
 
-	pr_info("Doing checkpoint\n");
 	console_unlock();
-	asm ("addi x0, x4, 0"); // for checkpointing (devices - other than UART - are init'ed after this)
 	flush_tlb_all();
 	asm ("addi x0, x3, 0"); // for checkpointing (devices - other than UART - are init'ed after this)
+	flush_tlb_all();
+	console_unlock();
 
 	if (ramdisk_execute_command) {
 		ret = run_init_process(ramdisk_execute_command);
