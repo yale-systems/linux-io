@@ -19,6 +19,7 @@
 #include <linux/spinlock.h>
 #include <linux/syscore_ops.h>
 #include <asm/smp.h>
+#include <linux/percpu.h>
 
 /*
  * This driver implements a version of the RISC-V PLIC with the actual layout
@@ -87,6 +88,29 @@ struct plic_handler {
 static int plic_parent_irq __ro_after_init;
 static bool plic_cpuhp_setup_done __ro_after_init;
 static DEFINE_PER_CPU(struct plic_handler, plic_handlers);
+
+static __always_inline u64 rdcycle_inline(void)
+{
+    u64 v;
+    asm volatile ("rdcycle %0" : "=r"(v));
+    return v;
+}
+
+static __always_inline u64 ktime_inline(void)
+{
+    u64 v;
+	v = ktime_get_mono_fast_ns();
+    return v;
+}
+
+/* Per-CPU stamp at PLIC claim */
+DEFINE_PER_CPU(u64, riscv_plic_claim_cycle);
+
+u64 riscv_get_plic_claim_cycle(void)
+{
+    return this_cpu_read(riscv_plic_claim_cycle);
+}
+EXPORT_SYMBOL_GPL(riscv_get_plic_claim_cycle);
 
 static int plic_irq_set_type(struct irq_data *d, unsigned int type);
 
@@ -368,6 +392,9 @@ static void plic_handle_irq(struct irq_desc *desc)
 	chained_irq_enter(chip, desc);
 
 	while ((hwirq = readl(claim))) {
+		/* Take timestamp immediately after claim */
+        __this_cpu_write(riscv_plic_claim_cycle, ktime_inline());
+
 		int err = generic_handle_domain_irq(handler->priv->irqdomain,
 						    hwirq);
 		if (unlikely(err))

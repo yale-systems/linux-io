@@ -20,6 +20,8 @@
 #include <linux/irq.h>
 #include <linux/kexec.h>
 #include <linux/entry-common.h>
+#include <linux/percpu.h>
+#include <linux/export.h>
 
 #include <asm/asm-prototypes.h>
 #include <asm/bug.h>
@@ -33,6 +35,23 @@
 #include <asm/irq_stack.h>
 
 int show_unhandled_signals = 1;
+
+static __always_inline u64 rdcycle_inline(void)
+{
+    u64 v;
+    asm volatile ("rdcycle %0" : "=r"(v));
+    return v;
+}
+
+/* Per-CPU stamp of cycle counter at interrupt entry */
+DEFINE_PER_CPU(u64, riscv_irq_entry_cycle);
+
+/* Export a cheap accessor for drivers */
+u64 riscv_get_irq_entry_cycle(void)
+{
+    return this_cpu_read(riscv_irq_entry_cycle);
+}
+EXPORT_SYMBOL_GPL(riscv_get_irq_entry_cycle);
 
 static DEFINE_SPINLOCK(die_lock);
 
@@ -357,8 +376,18 @@ static void noinstr handle_riscv_irq(struct pt_regs *regs)
 	irq_exit_rcu();
 }
 
+static __always_inline u64 ktime_inline(void)
+{
+    u64 v;
+	v = ktime_get_mono_fast_ns();
+    return v;
+}
+
 asmlinkage void noinstr do_irq(struct pt_regs *regs)
 {
+	/* Take the stamp immediately on hard IRQ entry. noinstr-safe. */
+    __this_cpu_write(riscv_irq_entry_cycle, ktime_inline());
+	
 	irqentry_state_t state = irqentry_enter(regs);
 #ifdef CONFIG_IRQ_STACKS
 	if (on_thread_stack()) {
