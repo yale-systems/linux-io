@@ -57,6 +57,7 @@ modules.order
 #
 # Top-level generic files
 #
+/vmlinux.relocs
 /linux
 /modules-only.symvers
 /vmlinux

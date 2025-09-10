@@ -89,13 +89,6 @@ static int plic_parent_irq __ro_after_init;
 static bool plic_cpuhp_setup_done __ro_after_init;
 static DEFINE_PER_CPU(struct plic_handler, plic_handlers);
 
-static __always_inline u64 rdcycle_inline(void)
-{
-    u64 v;
-    asm volatile ("rdcycle %0" : "=r"(v));
-    return v;
-}
-
 static __always_inline u64 ktime_inline(void)
 {
     u64 v;
@@ -104,13 +97,67 @@ static __always_inline u64 ktime_inline(void)
 }
 
 /* Per-CPU stamp at PLIC claim */
-DEFINE_PER_CPU(u64, riscv_plic_claim_cycle);
+DEFINE_PER_CPU(u64, riscv_plic_claim_ktime);
 
-u64 riscv_get_plic_claim_cycle(void)
+u64 riscv_get_plic_claim_ktime(void)
 {
-    return this_cpu_read(riscv_plic_claim_cycle);
+    return this_cpu_read(riscv_plic_claim_ktime);
 }
-EXPORT_SYMBOL_GPL(riscv_get_plic_claim_cycle);
+EXPORT_SYMBOL_GPL(riscv_get_plic_claim_ktime);
+
+/* ---- PLIC bypass hook (non-upstream hack) ---- */
+struct plic_bypass_entry {
+        bool                     enabled;
+        irqreturn_t            (*fn)(int hwirq, void *data);
+        void                    *data;
+};
+
+static DEFINE_SPINLOCK(plic_bypass_lock);
+static struct plic_bypass_entry *plic_bypass;  // sized to nr_sources+1
+static unsigned int plic_nr_sources;
+
+/* Call from plic init after reading nr_sources */
+static int plic_bypass_init(unsigned int nr_sources)
+{
+        plic_bypass = kcalloc(nr_sources + 1, sizeof(*plic_bypass), GFP_KERNEL);
+        if (!plic_bypass)
+                return -ENOMEM;
+        plic_nr_sources = nr_sources;
+        return 0;
+}
+
+/* Exported registration API (GPL-only if you prefer) */
+int plic_register_source_handler(int hwirq,
+                                 irqreturn_t (*fn)(int, void *),
+                                 void *data)
+{
+        unsigned long flags;
+        if (!plic_bypass || hwirq == 0 || hwirq > plic_nr_sources)
+                return -EINVAL;
+
+        spin_lock_irqsave(&plic_bypass_lock, flags);
+        plic_bypass[hwirq].fn = fn;
+        plic_bypass[hwirq].data = data;
+        plic_bypass[hwirq].enabled = true;
+        spin_unlock_irqrestore(&plic_bypass_lock, flags);
+        return 0;
+}
+EXPORT_SYMBOL_GPL(plic_register_source_handler);
+
+int plic_unregister_source_handler(int hwirq)
+{
+        unsigned long flags;
+        if (!plic_bypass || hwirq == 0 || hwirq > plic_nr_sources)
+                return -EINVAL;
+        spin_lock_irqsave(&plic_bypass_lock, flags);
+        plic_bypass[hwirq].enabled = false;
+        plic_bypass[hwirq].fn = NULL;
+        plic_bypass[hwirq].data = NULL;
+        spin_unlock_irqrestore(&plic_bypass_lock, flags);
+        return 0;
+}
+EXPORT_SYMBOL_GPL(plic_unregister_source_handler);
+
 
 static int plic_irq_set_type(struct irq_data *d, unsigned int type);
 
@@ -386,6 +433,8 @@ static void plic_handle_irq(struct irq_desc *desc)
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	void __iomem *claim = handler->hart_base + CONTEXT_CLAIM;
 	irq_hw_number_t hwirq;
+	bool fast_path;
+	irqreturn_t ret;
 
 	WARN_ON_ONCE(!handler->present);
 
@@ -393,13 +442,28 @@ static void plic_handle_irq(struct irq_desc *desc)
 
 	while ((hwirq = readl(claim))) {
 		/* Take timestamp immediately after claim */
-        __this_cpu_write(riscv_plic_claim_cycle, ktime_inline());
+        __this_cpu_write(riscv_plic_claim_ktime, ktime_inline());
 
-		int err = generic_handle_domain_irq(handler->priv->irqdomain,
-						    hwirq);
-		if (unlikely(err))
-			pr_warn_ratelimited("can't find mapping for hwirq %lu\n",
-					hwirq);
+		fast_path = READ_ONCE(plic_bypass[hwirq].enabled);
+
+		/* Take fast path if we have registered one */
+		if (fast_path) {
+			/* Our callback runs in hard-IRQ context: NO SLEEP. */
+			ret = plic_bypass[hwirq].fn(hwirq, READ_ONCE(plic_bypass[hwirq].data));
+			if (likely(ret == IRQ_HANDLED)) {
+				writel(hwirq, claim);
+			}
+		}
+		
+		/* Otherwise we go to normal kernel irq handler */
+		if (!fast_path || unlikely(ret != IRQ_HANDLED))
+		{
+			int err = generic_handle_domain_irq(handler->priv->irqdomain,
+								hwirq);
+			if (unlikely(err))
+				pr_warn_ratelimited("can't find mapping for hwirq %lu\n",
+						hwirq);
+		}
 	}
 
 	chained_irq_exit(chip, desc);
@@ -461,6 +525,11 @@ static int __init __plic_init(struct device_node *node,
 		goto out_iounmap;
 
 	priv->nr_irqs = nr_irqs;
+
+	/* ---- Hook init: size per-source table here ---- */
+    int ret = plic_bypass_init(nr_irqs);
+    if (ret)
+		goto out_free_priority_reg;
 
 	priv->prio_save = bitmap_alloc(nr_irqs, GFP_KERNEL);
 	if (!priv->prio_save)
