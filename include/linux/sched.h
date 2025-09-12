@@ -71,6 +71,8 @@ struct task_delay_info;
 struct task_group;
 struct user_event_mm;
 
+void sched_force_next_local(struct task_struct *p);
+
 /*
  * Task state bitmask. NOTE! These bits are also
  * encoded in fs/proc/array.c: get_task_state().
@@ -86,6 +88,7 @@ struct user_event_mm;
 #define TASK_RUNNING			0x00000000
 #define TASK_INTERRUPTIBLE		0x00000001
 #define TASK_UNINTERRUPTIBLE		0x00000002
+#define TASK_IOCACHE_SPECIAL		0x00010000
 #define __TASK_STOPPED			0x00000004
 #define __TASK_TRACED			0x00000008
 /* Used in tsk->exit_state: */
@@ -103,7 +106,7 @@ struct user_event_mm;
 #define TASK_FREEZABLE			0x00002000
 #define __TASK_FREEZABLE_UNSAFE	       (0x00004000 * IS_ENABLED(CONFIG_LOCKDEP))
 #define TASK_FROZEN			0x00008000
-#define TASK_STATE_MAX			0x00010000
+#define TASK_STATE_MAX			0x00020000
 
 #define TASK_ANY			(TASK_STATE_MAX-1)
 

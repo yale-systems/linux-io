@@ -952,6 +952,8 @@ struct balance_callback {
 	void (*func)(struct rq *rq);
 };
 
+void sched_force_next_local(struct task_struct *p);
+
 /*
  * This is the main, per-CPU runqueue data structure.
  *
@@ -962,6 +964,8 @@ struct balance_callback {
 struct rq {
 	/* runqueue lock: */
 	raw_spinlock_t		__lock;
+
+	struct task_struct *forced_next;   /* fast-path override */
 
 	/*
 	 * nr_running and cpu_load should be in the same cacheline because

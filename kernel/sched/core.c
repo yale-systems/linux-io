@@ -83,6 +83,7 @@
 #include <trace/events/ipi.h>
 #undef CREATE_TRACE_POINTS
 
+#include <linux/sched.h>
 #include "sched.h"
 #include "stats.h"
 #include "autogroup.h"
@@ -6534,6 +6535,14 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 # define SM_MASK_PREEMPT	SM_PREEMPT
 #endif
 
+void sched_force_next_local(struct task_struct *p)
+{
+    /* Assumes local hard-IRQ context: IRQs already disabled */
+    struct rq *rq = this_rq();
+    WRITE_ONCE(rq->forced_next, p);
+}
+EXPORT_SYMBOL_GPL(sched_force_next_local);
+
 /*
  * __schedule() is the main scheduler function.
  *
@@ -6656,7 +6665,39 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		switch_count = &prev->nvcsw;
 	}
 
+	struct task_struct *fn = READ_ONCE(rq->forced_next);
+	/* Must be on THIS rq */
+	if (fn && task_cpu(fn) == cpu_of(rq)) {
+		switch (fn->__state)
+		{
+		case TASK_RUNNING:
+			next = fn;
+			goto have_next;  
+		case TASK_PARKED: 
+			/* This happens during timeouts. Let Linux do its scheduling */
+			WRITE_ONCE(fn->__state, TASK_RUNNING);
+			activate_task(rq, fn, ENQUEUE_WAKEUP);
+    		check_preempt_curr(rq, fn, WF_SYNC);
+			next = fn;
+			goto have_next; 
+		case TASK_IOCACHE_SPECIAL: 
+			/* This happens during process ending. Let Linux do its scheduling */
+			WRITE_ONCE(fn->__state, TASK_RUNNING);
+			activate_task(rq, fn, ENQUEUE_WAKEUP);
+    		check_preempt_curr(rq, fn, WF_SYNC);
+			next = fn;
+			sched_force_next_local(NULL);
+			goto have_next; 
+		case TASK_INTERRUPTIBLE:
+			/* no op: We let the normal scheduler work */
+			break;
+		default:
+			break;
+		}
+    }
 	next = pick_next_task(rq, prev, &rf);
+
+have_next:
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 #ifdef CONFIG_SCHED_DEBUG
