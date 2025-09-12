@@ -6728,9 +6728,12 @@ have_next:
 		++*switch_count;
 
 		migrate_disable_switch(rq, prev);
-		psi_sched_switch(prev, next, !task_on_rq_queued(prev));
 
-		trace_sched_switch(sched_mode & SM_MASK_PREEMPT, prev, next, prev_state);
+		if (!fn || next != fn) { 
+			// No need for these in fast path
+			psi_sched_switch(prev, next, !task_on_rq_queued(prev));
+			trace_sched_switch(sched_mode & SM_MASK_PREEMPT, prev, next, prev_state);
+		}
 
 		/* Also unlocks the rq: */
 		rq = context_switch(rq, prev, next, &rf);

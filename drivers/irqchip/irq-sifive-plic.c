@@ -442,7 +442,7 @@ static void plic_handle_irq(struct irq_desc *desc)
 
 	while ((hwirq = readl(claim))) {
 		/* Take timestamp immediately after claim */
-        __this_cpu_write(riscv_plic_claim_ktime, ktime_inline());
+        // __this_cpu_write(riscv_plic_claim_ktime, ktime_inline());
 
 		fast_path = READ_ONCE(plic_bypass[hwirq].enabled);
 

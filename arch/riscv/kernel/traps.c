@@ -379,7 +379,7 @@ static __always_inline u64 ktime_inline(void)
 asmlinkage void noinstr do_irq(struct pt_regs *regs)
 {
 	/* Take the stamp immediately on hard IRQ entry. noinstr-safe. */
-    __this_cpu_write(riscv_irq_entry_ktime, ktime_inline());
+    // __this_cpu_write(riscv_irq_entry_ktime, ktime_inline());
 	
 	irqentry_state_t state = irqentry_enter(regs);
 #ifdef CONFIG_IRQ_STACKS
