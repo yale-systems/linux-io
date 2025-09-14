@@ -6741,7 +6741,9 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			next = fn;
 			goto have_next; 
 		case TASK_IOCACHE_SPECIAL: 
-			/* This happens during process ending. Let Linux do its scheduling */
+			/* This happens during process ending. 
+			 * We give the process back to Linux 
+			 */
 			WRITE_ONCE(fn->__state, TASK_RUNNING);
 			activate_task(rq, fn, ENQUEUE_WAKEUP);
     		check_preempt_curr(rq, fn, WF_SYNC);
@@ -6752,6 +6754,9 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			update_rq_clock(rq);
 
 			__sched_force_next_local(rq, NULL);
+
+			put_prev_task(rq, prev);
+
 			goto have_next; 
 		case TASK_INTERRUPTIBLE:
 			/* Waiting for interrupts: Let the normal scheduler work */
