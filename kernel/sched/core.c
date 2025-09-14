@@ -6543,9 +6543,6 @@ void __sched_force_next_local(struct task_struct *p)
 		p->my_oncpu_start_ns = rq_clock_task(rq);
 		deactivate_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
 	}
-	else {
-		p->my_oncpu_start_ns = 0;
-	}
 }
 
 void sched_force_next_local(struct task_struct *p)
@@ -6562,6 +6559,12 @@ EXPORT_SYMBOL_GPL(sched_force_next_local);
 
 static __always_inline void my_oncpu_stop(struct rq *rq, struct task_struct *p)
 {
+	if (p == NULL) {
+		p->my_oncpu_total_ns = 0;
+		p->my_oncpu_start_ns = 0;
+		return;
+	}
+
     if (likely(p->my_oncpu_start_ns)) {
         /* rq_clock_task(rq) is the scheduler's task timebase; rq lock held */
         u64 now = rq_clock_task(rq);
@@ -6572,6 +6575,8 @@ static __always_inline void my_oncpu_stop(struct rq *rq, struct task_struct *p)
 
 static __always_inline void my_oncpu_start(struct rq *rq, struct task_struct *p)
 {
+	if (p == NULL)
+		return;
     /* never “start” the idle thread */
     if (unlikely(p == rq->idle))
         return;
@@ -6674,9 +6679,8 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	update_rq_clock(rq);
 
 	/* Charge the slice that 'prev' just ran */
-    if (likely(prev == fn))
+    if (prev == fn)
         my_oncpu_stop(rq, fn);
-
 
 	if (fast_path_runnable && prev != fn && prev != rq->idle) {
 		WRITE_ONCE(rq->forced_prev, prev);
@@ -6768,20 +6772,14 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 				rq->fast_path_starttime = rq->clock;
 			}
 			next = fn;
-			goto have_next;
-		case TASK_PARKED: 
-			/* This happens during timeouts. Let Linux do its scheduling */
-			WRITE_ONCE(fn->__state, TASK_RUNNING);
-			// activate_task(rq, fn, ENQUEUE_WAKEUP);
-    		// check_preempt_curr(rq, fn, WF_SYNC);
-			next = fn;
 			goto have_next; 
 		case TASK_IOCACHE_SPECIAL: 
 			/* This happens during process ending. Let Linux do its scheduling */
 			WRITE_ONCE(fn->__state, TASK_RUNNING);
 			activate_task(rq, fn, ENQUEUE_WAKEUP);
     		check_preempt_curr(rq, fn, WF_SYNC);
-			next = fn;
+			WRITE_ONCE(next, fn);
+
 			__sched_force_next_local(NULL);
 			goto have_next; 
 		case TASK_INTERRUPTIBLE:
