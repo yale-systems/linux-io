@@ -966,6 +966,10 @@ struct rq {
 	raw_spinlock_t		__lock;
 
 	struct task_struct *forced_next;   /* fast-path override */
+	struct task_struct *forced_prev;   /* fast-path override */
+	u64 fast_path_starttime;
+	u64 fast_path_usage;
+	u64 fast_path_endtime;
 
 	/*
 	 * nr_running and cpu_load should be in the same cacheline because

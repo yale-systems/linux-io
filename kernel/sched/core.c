@@ -6535,13 +6535,45 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 # define SM_MASK_PREEMPT	SM_PREEMPT
 #endif
 
+void __sched_force_next_local(struct task_struct *p)
+{
+	struct rq *rq = this_rq();
+    WRITE_ONCE(rq->forced_next, p);
+	if (p) {
+		p->my_oncpu_start_ns = rq_clock_task(rq);
+		deactivate_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+	}
+}
+
 void sched_force_next_local(struct task_struct *p)
 {
     /* Assumes local hard-IRQ context: IRQs already disabled */
+	struct rq_flags rf;
+	
     struct rq *rq = this_rq();
-    WRITE_ONCE(rq->forced_next, p);
+	rq_lock(rq, &rf);
+    __sched_force_next_local(p);
+	rq_unlock(rq, &rf);
 }
 EXPORT_SYMBOL_GPL(sched_force_next_local);
+
+static __always_inline void my_oncpu_stop(struct rq *rq, struct task_struct *p)
+{
+    if (likely(p->my_oncpu_start_ns)) {
+        /* rq_clock_task(rq) is the scheduler's task timebase; rq lock held */
+        u64 now = rq_clock_task(rq);
+        p->my_oncpu_total_ns += now - p->my_oncpu_start_ns;
+        p->my_oncpu_start_ns = 0;
+    }
+}
+
+static __always_inline void my_oncpu_start(struct rq *rq, struct task_struct *p)
+{
+    /* never “start” the idle thread */
+    if (unlikely(p == rq->idle))
+        return;
+    p->my_oncpu_start_ns = rq_clock_task(rq);
+}
 
 /*
  * __schedule() is the main scheduler function.
@@ -6585,8 +6617,9 @@ EXPORT_SYMBOL_GPL(sched_force_next_local);
 static void __sched notrace __schedule(unsigned int sched_mode)
 {
 	struct task_struct *prev, *next;
+	struct task_struct *fn;
 	unsigned long *switch_count;
-	unsigned long prev_state;
+	unsigned long prev_state, fn_state, old_prev_state;
 	struct rq_flags rf;
 	struct rq *rq;
 	int cpu;
@@ -6595,10 +6628,10 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	rq = cpu_rq(cpu);
 	prev = rq->curr;
 
-	schedule_debug(prev, !!sched_mode);
+	// schedule_debug(prev, !!sched_mode);
 
-	if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
-		hrtick_clear(rq);
+	// if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
+	// 	hrtick_clear(rq);
 
 	local_irq_disable();
 	rcu_note_context_switch(!!sched_mode);
@@ -6621,63 +6654,123 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	rq_lock(rq, &rf);
 	smp_mb__after_spinlock();
 
+	fn = READ_ONCE(rq->forced_next);
+	if (fn) 
+		fn_state = READ_ONCE(fn->__state);
+
+	bool fast_path = fn && (task_cpu(fn) == cpu);
+	bool fast_path_runnable = fast_path &&
+							(fn_state == TASK_RUNNING ||
+							 fn_state == TASK_PARKED ||
+							 fn_state == TASK_IOCACHE_SPECIAL);
+
+	switch_count = &prev->nivcsw;
+
 	/* Promote REQ to ACT */
 	rq->clock_update_flags <<= 1;
 	update_rq_clock(rq);
 
-	switch_count = &prev->nivcsw;
+	/* Charge the slice that 'prev' just ran */
+    if (likely(prev == fn))
+        my_oncpu_stop(rq, fn);
 
-	/*
-	 * We must load prev->state once (task_struct::state is volatile), such
-	 * that we form a control dependency vs deactivate_task() below.
-	 */
-	prev_state = READ_ONCE(prev->__state);
-	if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
-		if (signal_pending_state(prev_state, prev)) {
-			WRITE_ONCE(prev->__state, TASK_RUNNING);
-		} else {
-			prev->sched_contributes_to_load =
-				(prev_state & TASK_UNINTERRUPTIBLE) &&
-				!(prev_state & TASK_NOLOAD) &&
-				!(prev_state & TASK_FROZEN);
 
-			if (prev->sched_contributes_to_load)
-				rq->nr_uninterruptible++;
-
-			/*
-			 * __schedule()			ttwu()
-			 *   prev_state = prev->state;    if (p->on_rq && ...)
-			 *   if (prev_state)		    goto out;
-			 *     p->on_rq = 0;		  smp_acquire__after_ctrl_dep();
-			 *				  p->state = TASK_WAKING
-			 *
-			 * Where __schedule() and ttwu() have matching control dependencies.
-			 *
-			 * After this, schedule() must not care about p->state any more.
-			 */
-			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
-
-			if (prev->in_iowait) {
-				atomic_inc(&rq->nr_iowait);
-				delayacct_blkio_start();
-			}
-		}
-		switch_count = &prev->nvcsw;
+	if (fast_path_runnable && prev != fn && prev != rq->idle) {
+		WRITE_ONCE(rq->forced_prev, prev);
 	}
+	if (!fast_path_runnable) {
+		// /* Promote REQ to ACT */
+		// rq->clock_update_flags <<= 1;
+		// update_rq_clock(rq);
 
-	struct task_struct *fn = READ_ONCE(rq->forced_next);
-	/* Must be on THIS rq */
-	if (fn && task_cpu(fn) == cpu_of(rq)) {
-		switch (fn->__state)
+		switch_count = &prev->nivcsw;
+
+		/*
+		* We must load prev->state once (task_struct::state is volatile), such
+		* that we form a control dependency vs deactivate_task() below.
+		*/
+		prev_state = READ_ONCE(prev->__state);
+		if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
+			if (signal_pending_state(prev_state, prev)) {
+				WRITE_ONCE(prev->__state, TASK_RUNNING);
+			} else {
+				prev->sched_contributes_to_load =
+					(prev_state & TASK_UNINTERRUPTIBLE) &&
+					!(prev_state & TASK_NOLOAD) &&
+					!(prev_state & TASK_FROZEN);
+
+				if (prev->sched_contributes_to_load)
+					rq->nr_uninterruptible++;
+
+				/*
+				* __schedule()			ttwu()
+				*   prev_state = prev->state;    if (p->on_rq && ...)
+				*   if (prev_state)		    goto out;
+				*     p->on_rq = 0;		  smp_acquire__after_ctrl_dep();
+				*				  p->state = TASK_WAKING
+				*
+				* Where __schedule() and ttwu() have matching control dependencies.
+				*
+				* After this, schedule() must not care about p->state any more.
+				*/
+				deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+
+				if (prev->in_iowait) {
+					atomic_inc(&rq->nr_iowait);
+					delayacct_blkio_start();
+				}
+			}
+			switch_count = &prev->nvcsw;
+		}
+
+		struct task_struct *old_prev = READ_ONCE(rq->forced_prev);
+		if (old_prev != NULL) {
+			/* We delayed this for forced_prev because we were in fast path. 
+			 * Now we make up for it by doing exact same things. 
+			 * Basically copied and pastes everything below.  
+			 */
+			switch_count = &old_prev->nivcsw;
+
+			old_prev_state = READ_ONCE(old_prev->__state);
+			if (!(sched_mode & SM_MASK_PREEMPT) && old_prev_state) {
+				if (signal_pending_state(old_prev_state, old_prev)) {
+					WRITE_ONCE(old_prev->__state, TASK_RUNNING);
+				} else {
+					old_prev->sched_contributes_to_load =
+						(old_prev_state & TASK_UNINTERRUPTIBLE) &&
+						!(old_prev_state & TASK_NOLOAD) &&
+						!(old_prev_state & TASK_FROZEN);
+
+					if (old_prev->sched_contributes_to_load)
+						rq->nr_uninterruptible++;
+					
+					deactivate_task(rq, old_prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+
+					if (old_prev->in_iowait) {
+						atomic_inc(&rq->nr_iowait);
+						delayacct_blkio_start();
+					}
+				}
+				switch_count = &old_prev->nvcsw;
+			}
+			WRITE_ONCE(rq->forced_prev, NULL);
+		}
+	}
+	
+	if (fast_path) {
+		switch (fn_state)
 		{
 		case TASK_RUNNING:
+			if (rq->fast_path_starttime == 0) {
+				rq->fast_path_starttime = rq->clock;
+			}
 			next = fn;
-			goto have_next;  
+			goto have_next;
 		case TASK_PARKED: 
 			/* This happens during timeouts. Let Linux do its scheduling */
 			WRITE_ONCE(fn->__state, TASK_RUNNING);
-			activate_task(rq, fn, ENQUEUE_WAKEUP);
-    		check_preempt_curr(rq, fn, WF_SYNC);
+			// activate_task(rq, fn, ENQUEUE_WAKEUP);
+    		// check_preempt_curr(rq, fn, WF_SYNC);
 			next = fn;
 			goto have_next; 
 		case TASK_IOCACHE_SPECIAL: 
@@ -6686,10 +6779,11 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			activate_task(rq, fn, ENQUEUE_WAKEUP);
     		check_preempt_curr(rq, fn, WF_SYNC);
 			next = fn;
-			sched_force_next_local(NULL);
+			__sched_force_next_local(NULL);
 			goto have_next; 
 		case TASK_INTERRUPTIBLE:
-			/* no op: We let the normal scheduler work */
+			/* Waiting for interrupts: Let the normal scheduler work */
+			// printk(KERN_INFO "*** I am in interruptible ***\n");
 			break;
 		default:
 			break;
@@ -6729,7 +6823,11 @@ have_next:
 
 		migrate_disable_switch(rq, prev);
 
-		if (!fn || next != fn) { 
+		if (next == fn) {
+			my_oncpu_start(rq, next);
+		}
+
+		if (!fast_path_runnable) { 
 			// No need for these in fast path
 			psi_sched_switch(prev, next, !task_on_rq_queued(prev));
 			trace_sched_switch(sched_mode & SM_MASK_PREEMPT, prev, next, prev_state);

@@ -892,7 +892,9 @@ EXPORT_SYMBOL_GPL(rcu_all_qs);
  */
 void rcu_note_context_switch(bool preempt)
 {
+#ifdef CONFIG_RCU_TRACE
 	trace_rcu_utilization(TPS("Start context switch"));
+#endif
 	rcu_qs();
 	/* Load rcu_urgent_qs before other flags. */
 	if (!smp_load_acquire(this_cpu_ptr(&rcu_data.rcu_urgent_qs)))
@@ -902,7 +904,9 @@ void rcu_note_context_switch(bool preempt)
 		rcu_momentary_dyntick_idle();
 out:
 	rcu_tasks_qs(current, preempt);
+#ifdef CONFIG_RCU_TRACE
 	trace_rcu_utilization(TPS("End context switch"));
+#endif
 }
 EXPORT_SYMBOL_GPL(rcu_note_context_switch);
 
