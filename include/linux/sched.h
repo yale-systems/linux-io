@@ -789,8 +789,11 @@ struct task_struct {
 #endif
 	int				on_rq;
 
-	u64 my_oncpu_start_ns;
-	u64 my_oncpu_total_ns;
+	// u64 my_oncpu_start_ns;
+	// u64 my_oncpu_total_ns;
+
+	// u64 my_oncpu_wall_start_ns;
+	// u64 my_oncpu_wall_ns;
 
 	int				prio;
 	int				static_prio;

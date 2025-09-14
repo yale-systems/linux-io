@@ -6535,53 +6535,62 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 # define SM_MASK_PREEMPT	SM_PREEMPT
 #endif
 
-void __sched_force_next_local(struct task_struct *p)
+static __always_inline void __sched_force_next_local(struct rq *rq, struct task_struct *p)
 {
-	struct rq *rq = this_rq();
-    WRITE_ONCE(rq->forced_next, p);
-	if (p) {
-		p->my_oncpu_start_ns = rq_clock_task(rq);
+	if (p != NULL) {
+		// p->my_oncpu_total_ns = 0;
+		// p->my_oncpu_start_ns = rq_clock_task(rq);
+		// p->my_oncpu_wall_start_ns = rq_clock_task(rq);
 		deactivate_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
 	}
+    WRITE_ONCE(rq->forced_next, p);
 }
 
 void sched_force_next_local(struct task_struct *p)
 {
     /* Assumes local hard-IRQ context: IRQs already disabled */
 	struct rq_flags rf;
-	
-    struct rq *rq = this_rq();
+	struct rq *rq;
+
+	local_irq_disable();
+
+    rq = this_rq();
 	rq_lock(rq, &rf);
-    __sched_force_next_local(p);
+	smp_mb__after_spinlock();
+
+    __sched_force_next_local(rq, p);
+
 	rq_unlock(rq, &rf);
+
+	local_irq_enable();
 }
 EXPORT_SYMBOL_GPL(sched_force_next_local);
 
-static __always_inline void my_oncpu_stop(struct rq *rq, struct task_struct *p)
-{
-	if (p == NULL) {
-		p->my_oncpu_total_ns = 0;
-		p->my_oncpu_start_ns = 0;
-		return;
-	}
+// static __always_inline void my_oncpu_stop(struct rq *rq, struct task_struct *p)
+// {
+// 	if (p == NULL) {
+// 		p->my_oncpu_total_ns = 0;
+// 		p->my_oncpu_start_ns = 0;
+// 		return;
+// 	}
 
-    if (likely(p->my_oncpu_start_ns)) {
-        /* rq_clock_task(rq) is the scheduler's task timebase; rq lock held */
-        u64 now = rq_clock_task(rq);
-        p->my_oncpu_total_ns += now - p->my_oncpu_start_ns;
-        p->my_oncpu_start_ns = 0;
-    }
-}
+//     if (likely(p->my_oncpu_start_ns)) {
+//         /* rq_clock_task(rq) is the scheduler's task timebase; rq lock held */
+//         u64 now = rq_clock_task(rq);
+//         p->my_oncpu_total_ns += now - p->my_oncpu_start_ns;
+//         p->my_oncpu_start_ns = 0;
+//     }
+// }
 
-static __always_inline void my_oncpu_start(struct rq *rq, struct task_struct *p)
-{
-	if (p == NULL)
-		return;
-    /* never “start” the idle thread */
-    if (unlikely(p == rq->idle))
-        return;
-    p->my_oncpu_start_ns = rq_clock_task(rq);
-}
+// static __always_inline void my_oncpu_start(struct rq *rq, struct task_struct *p)
+// {
+// 	if (p == NULL)
+// 		return;
+//     /* never “start” the idle thread */
+//     if (unlikely(p == rq->idle))
+//         return;
+//     p->my_oncpu_start_ns = rq_clock_task(rq);
+// }
 
 /*
  * __schedule() is the main scheduler function.
@@ -6627,7 +6636,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	struct task_struct *prev, *next;
 	struct task_struct *fn;
 	unsigned long *switch_count;
-	unsigned long prev_state, fn_state, old_prev_state;
+	unsigned long prev_state, fn_state;
 	struct rq_flags rf;
 	struct rq *rq;
 	int cpu;
@@ -6668,30 +6677,19 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 
 	bool fast_path = fn && (task_cpu(fn) == cpu);
 	bool fast_path_runnable = fast_path &&
-							(fn_state == TASK_RUNNING ||
-							 fn_state == TASK_PARKED ||
-							 fn_state == TASK_IOCACHE_SPECIAL);
-
+							 (fn_state == TASK_RUNNING ||
+							  fn_state == TASK_PARKED ||
+							  fn_state == TASK_IOCACHE_SPECIAL);
+		
+	if (!fast_path) {
+		/* Promote REQ to ACT */
+		rq->clock_update_flags <<= 1;
+		update_rq_clock(rq);
+	}
+	
 	switch_count = &prev->nivcsw;
 
-	/* Promote REQ to ACT */
-	rq->clock_update_flags <<= 1;
-	update_rq_clock(rq);
-
-	/* Charge the slice that 'prev' just ran */
-    if (prev == fn)
-        my_oncpu_stop(rq, fn);
-
-	if (fast_path_runnable && prev != fn && prev != rq->idle) {
-		WRITE_ONCE(rq->forced_prev, prev);
-	}
-	if (!fast_path_runnable) {
-		// /* Promote REQ to ACT */
-		// rq->clock_update_flags <<= 1;
-		// update_rq_clock(rq);
-
-		switch_count = &prev->nivcsw;
-
+	if (prev != fn) {
 		/*
 		* We must load prev->state once (task_struct::state is volatile), such
 		* that we form a control dependency vs deactivate_task() below.
@@ -6729,48 +6727,17 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			}
 			switch_count = &prev->nvcsw;
 		}
-
-		struct task_struct *old_prev = READ_ONCE(rq->forced_prev);
-		if (old_prev != NULL) {
-			/* We delayed this for forced_prev because we were in fast path. 
-			 * Now we make up for it by doing exact same things. 
-			 * Basically copied and pastes everything below.  
-			 */
-			switch_count = &old_prev->nivcsw;
-
-			old_prev_state = READ_ONCE(old_prev->__state);
-			if (!(sched_mode & SM_MASK_PREEMPT) && old_prev_state) {
-				if (signal_pending_state(old_prev_state, old_prev)) {
-					WRITE_ONCE(old_prev->__state, TASK_RUNNING);
-				} else {
-					old_prev->sched_contributes_to_load =
-						(old_prev_state & TASK_UNINTERRUPTIBLE) &&
-						!(old_prev_state & TASK_NOLOAD) &&
-						!(old_prev_state & TASK_FROZEN);
-
-					if (old_prev->sched_contributes_to_load)
-						rq->nr_uninterruptible++;
-					
-					deactivate_task(rq, old_prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
-
-					if (old_prev->in_iowait) {
-						atomic_inc(&rq->nr_iowait);
-						delayacct_blkio_start();
-					}
-				}
-				switch_count = &old_prev->nvcsw;
-			}
-			WRITE_ONCE(rq->forced_prev, NULL);
-		}
 	}
+	
+	// /* Charge the slice that 'prev' just ran */
+    // if (fast_path && prev == fn) {
+	// 	my_oncpu_stop(rq, fn);
+	// }
 	
 	if (fast_path) {
 		switch (fn_state)
 		{
 		case TASK_RUNNING:
-			if (rq->fast_path_starttime == 0) {
-				rq->fast_path_starttime = rq->clock;
-			}
 			next = fn;
 			goto have_next; 
 		case TASK_IOCACHE_SPECIAL: 
@@ -6779,8 +6746,12 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			activate_task(rq, fn, ENQUEUE_WAKEUP);
     		check_preempt_curr(rq, fn, WF_SYNC);
 			WRITE_ONCE(next, fn);
+			// fn->my_oncpu_wall_ns = rq_clock_task(rq) - fn->my_oncpu_wall_start_ns;
+			
+			rq->clock_update_flags <<= 1;
+			update_rq_clock(rq);
 
-			__sched_force_next_local(NULL);
+			__sched_force_next_local(rq, NULL);
 			goto have_next; 
 		case TASK_INTERRUPTIBLE:
 			/* Waiting for interrupts: Let the normal scheduler work */
@@ -6789,10 +6760,22 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		default:
 			break;
 		}
+
+		if (prev == fn) {
+			next = pick_next_task(rq, rq->idle, &rf);
+			goto have_next;
+		}
     }
+
+	WARN_ON_ONCE(!rq);
 	next = pick_next_task(rq, prev, &rf);
 
 have_next:
+	// /* Start the slice for fn that will run */
+	// if (fast_path && fn_state != TASK_IOCACHE_SPECIAL && next == fn) {
+	// 	my_oncpu_start(rq, next);
+	// }
+	
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 #ifdef CONFIG_SCHED_DEBUG
@@ -6823,10 +6806,6 @@ have_next:
 		++*switch_count;
 
 		migrate_disable_switch(rq, prev);
-
-		if (next == fn) {
-			my_oncpu_start(rq, next);
-		}
 
 		if (!fast_path_runnable) { 
 			// No need for these in fast path
