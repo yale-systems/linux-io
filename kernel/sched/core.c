@@ -6543,6 +6543,9 @@ void __sched_force_next_local(struct task_struct *p)
 		p->my_oncpu_start_ns = rq_clock_task(rq);
 		deactivate_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
 	}
+	else {
+		p->my_oncpu_start_ns = 0;
+	}
 }
 
 void sched_force_next_local(struct task_struct *p)
