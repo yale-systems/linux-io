@@ -72,6 +72,7 @@ struct task_group;
 struct user_event_mm;
 
 void sched_force_next_local(struct task_struct *p);
+int wake_up_process_iocache(struct task_struct *p);
 
 /*
  * Task state bitmask. NOTE! These bits are also

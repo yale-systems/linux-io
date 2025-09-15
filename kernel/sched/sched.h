@@ -953,6 +953,7 @@ struct balance_callback {
 };
 
 void sched_force_next_local(struct task_struct *p);
+int wake_up_process_iocache(struct task_struct *p);
 
 /*
  * This is the main, per-CPU runqueue data structure.
@@ -2168,6 +2169,8 @@ static inline int task_on_rq_migrating(struct task_struct *p)
 #define WF_SYNC         0x10 /* Waker goes to sleep after wakeup */
 #define WF_MIGRATED     0x20 /* Internal use, task got migrated */
 #define WF_CURRENT_CPU  0x40 /* Prefer to move the wakee to the current CPU. */
+
+#define WF_IOCACHE_WAKEUP 0x80
 
 #ifdef CONFIG_SMP
 static_assert(WF_EXEC == SD_BALANCE_EXEC);

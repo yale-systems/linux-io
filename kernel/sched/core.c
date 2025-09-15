@@ -4202,7 +4202,7 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 	guard(preempt)();
 	int cpu, success = 0;
 
-	if (p == current) {
+	if (p == current && !(wake_flags & WF_IOCACHE_WAKEUP)) {
 		/*
 		 * We're waking current, this means 'p->on_rq' and 'task_cpu(p)
 		 * == smp_processor_id()'. Together this means we can special
@@ -4221,6 +4221,9 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 		ttwu_do_wakeup(p);
 		goto out;
 	}
+
+	// clear iocache flag
+	wake_flags &= ~WF_IOCACHE_WAKEUP;
 
 	/*
 	 * If we are going to wake up a thread waiting for CONDITION we
@@ -4479,6 +4482,12 @@ int wake_up_process(struct task_struct *p)
 	return try_to_wake_up(p, TASK_NORMAL, 0);
 }
 EXPORT_SYMBOL(wake_up_process);
+
+int wake_up_process_iocache(struct task_struct *p)
+{
+	return try_to_wake_up(p, TASK_NORMAL, WF_IOCACHE_WAKEUP);
+}
+EXPORT_SYMBOL_GPL(wake_up_process_iocache);
 
 int wake_up_state(struct task_struct *p, unsigned int state)
 {
@@ -6541,7 +6550,7 @@ static __always_inline void __sched_force_next_local(struct rq *rq, struct task_
 		// p->my_oncpu_total_ns = 0;
 		// p->my_oncpu_start_ns = rq_clock_task(rq);
 		// p->my_oncpu_wall_start_ns = rq_clock_task(rq);
-		deactivate_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+		deactivate_task(rq, p, DEQUEUE_SLEEP);
 	}
     WRITE_ONCE(rq->forced_next, p);
 }
@@ -6745,18 +6754,15 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			 * We give the process back to Linux 
 			 */
 			WRITE_ONCE(fn->__state, TASK_RUNNING);
-			activate_task(rq, fn, ENQUEUE_WAKEUP);
-    		check_preempt_curr(rq, fn, WF_SYNC);
-			WRITE_ONCE(next, fn);
+			if (!task_on_rq_queued(fn)) {
+				activate_task(rq, fn, ENQUEUE_WAKEUP);
+			}
+			next = fn;
+			
+    		// check_preempt_curr(rq, fn, 0);
 			// fn->my_oncpu_wall_ns = rq_clock_task(rq) - fn->my_oncpu_wall_start_ns;
 			
-			rq->clock_update_flags <<= 1;
-			update_rq_clock(rq);
-
 			__sched_force_next_local(rq, NULL);
-
-			put_prev_task(rq, prev);
-
 			goto have_next; 
 		case TASK_INTERRUPTIBLE:
 			/* Waiting for interrupts: Let the normal scheduler work */
@@ -6765,15 +6771,11 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		default:
 			break;
 		}
-
-		if (prev == fn) {
-			next = pick_next_task(rq, rq->idle, &rf);
-			goto have_next;
-		}
     }
 
-	WARN_ON_ONCE(!rq);
 	next = pick_next_task(rq, prev, &rf);
+
+	WARN_ON_ONCE(fast_path && fn_state == TASK_INTERRUPTIBLE && next == fn);
 
 have_next:
 	// /* Start the slice for fn that will run */
