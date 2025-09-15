@@ -4483,20 +4483,56 @@ int wake_up_process(struct task_struct *p)
 }
 EXPORT_SYMBOL(wake_up_process);
 
+static __always_inline void __sched_force_next_local(struct rq *rq, struct task_struct *p)
+{
+	if (p != NULL) {
+		// p->my_oncpu_total_ns = 0;
+		// p->my_oncpu_start_ns = rq_clock_task(rq);
+		// p->my_oncpu_wall_start_ns = rq_clock_task(rq);
+		deactivate_task(rq, p, DEQUEUE_MOVE);
+	}
+    WRITE_ONCE(rq->forced_next, p);
+}
+
+void sched_force_next_local(struct task_struct *p)
+{
+    /* Assumes local hard-IRQ context: IRQs already disabled */
+	struct rq_flags rf;
+	struct rq *rq;
+
+	local_irq_disable();
+
+    rq = this_rq();
+	rq_lock(rq, &rf);
+	smp_mb__after_spinlock();
+
+    __sched_force_next_local(rq, p);
+
+	rq_unlock(rq, &rf);
+
+	local_irq_enable();
+}
+EXPORT_SYMBOL_GPL(sched_force_next_local);
+
 int wake_up_process_iocache(struct task_struct *p)
 {
 	struct rq_flags rf;
 
 	struct rq *rq = task_rq(p);
+
+	// printk(KERN_INFO "wake_up_process_iocache: start\n");
 	
 	local_irq_disable();
 	rq_lock(rq, &rf);
 	smp_mb__after_spinlock();
 
-    WRITE_ONCE(p->__state, TASK_RUNNING);
+	update_rq_clock(rq);
+	ttwu_do_activate(rq, p, ENQUEUE_MOVE, &rf);
 	
 	rq_unlock(rq, &rf);
 	local_irq_enable();
+
+	// printk(KERN_INFO "wake_up_process_iocache: end\n");
 
 	return try_to_wake_up(p, TASK_NORMAL, WF_IOCACHE_WAKEUP);
 }
@@ -6557,36 +6593,6 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 # define SM_MASK_PREEMPT	SM_PREEMPT
 #endif
 
-static __always_inline void __sched_force_next_local(struct rq *rq, struct task_struct *p)
-{
-	if (p != NULL) {
-		// p->my_oncpu_total_ns = 0;
-		// p->my_oncpu_start_ns = rq_clock_task(rq);
-		// p->my_oncpu_wall_start_ns = rq_clock_task(rq);
-		deactivate_task(rq, p, DEQUEUE_SLEEP);
-	}
-    WRITE_ONCE(rq->forced_next, p);
-}
-
-void sched_force_next_local(struct task_struct *p)
-{
-    /* Assumes local hard-IRQ context: IRQs already disabled */
-	struct rq_flags rf;
-	struct rq *rq;
-
-	local_irq_disable();
-
-    rq = this_rq();
-	rq_lock(rq, &rf);
-	smp_mb__after_spinlock();
-
-    __sched_force_next_local(rq, p);
-
-	rq_unlock(rq, &rf);
-
-	local_irq_enable();
-}
-EXPORT_SYMBOL_GPL(sched_force_next_local);
 
 // static __always_inline void my_oncpu_stop(struct rq *rq, struct task_struct *p)
 // {
@@ -6775,12 +6781,15 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			
     		// check_preempt_curr(rq, fn, 0);
 			// fn->my_oncpu_wall_ns = rq_clock_task(rq) - fn->my_oncpu_wall_start_ns;
-			
-			__sched_force_next_local(rq, NULL);
+
 			goto have_next; 
 		case TASK_INTERRUPTIBLE:
 			/* Waiting for interrupts: Let the normal scheduler work */
 			// printk(KERN_INFO "*** I am in interruptible ***\n");
+			if (prev == fn) {
+				next = rq->idle;
+				goto have_next; 
+			}
 			break;
 		default:
 			break;

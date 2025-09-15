@@ -8173,6 +8173,11 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
 	struct task_struct *p;
 	int new_tasks;
 
+	WARN_ON_ONCE(!rq);
+	WARN_ON_ONCE(!cfs_rq);
+	if (!cfs_rq || !rq) {
+		goto idle;
+	}
 again:
 	if (!sched_fair_runnable(rq))
 		goto idle;
