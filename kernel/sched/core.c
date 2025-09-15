@@ -4485,6 +4485,19 @@ EXPORT_SYMBOL(wake_up_process);
 
 int wake_up_process_iocache(struct task_struct *p)
 {
+	struct rq_flags rf;
+
+	struct rq *rq = task_rq(p);
+	
+	local_irq_disable();
+	rq_lock(rq, &rf);
+	smp_mb__after_spinlock();
+
+    WRITE_ONCE(p->__state, TASK_RUNNING);
+	
+	rq_unlock(rq, &rf);
+	local_irq_enable();
+
 	return try_to_wake_up(p, TASK_NORMAL, WF_IOCACHE_WAKEUP);
 }
 EXPORT_SYMBOL_GPL(wake_up_process_iocache);
@@ -6755,7 +6768,8 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			 */
 			WRITE_ONCE(fn->__state, TASK_RUNNING);
 			if (!task_on_rq_queued(fn)) {
-				activate_task(rq, fn, ENQUEUE_WAKEUP);
+				// activate_task(rq, fn, ENQUEUE_WAKEUP);
+				ttwu_do_activate(rq, fn, ENQUEUE_WAKEUP, &rf);
 			}
 			next = fn;
 			
