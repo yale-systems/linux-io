@@ -954,6 +954,17 @@ struct balance_callback {
 
 void sched_force_next_local(struct task_struct *p);
 int wake_up_process_iocache(struct task_struct *p);
+int register_iocache_forall(void __iomem *iocache_iomem);
+
+#define REG(base, off) ((void __iomem *)((u8 __iomem *)(base) + (off)))
+#define IOCACHE_KICK_BASE    0x100UL
+#define IOCACHE_SCHED_BASE   0x200UL
+#define IOCACHE_REG_SCHED_READ(c)      (IOCACHE_SCHED_BASE + (0x10UL*(c)) + 0x00UL)
+#define IOCACHE_REG_SCHED_PEEK(c)      (IOCACHE_SCHED_BASE + (0x10UL*(c)) + 0x08UL)
+#define IOCACHE_REG_RX_KICK_ALL_CPU     (IOCACHE_KICK_BASE + 0x00UL) /* WO 32b */
+#define IOCACHE_REG_RX_KICK_ALL_COUNT   (IOCACHE_KICK_BASE + 0x08UL) /* RO */
+#define IOCACHE_REG_RX_KICK_ALL_MASK    (IOCACHE_KICK_BASE + 0x10UL) /* RO */
+
 
 /*
  * This is the main, per-CPU runqueue data structure.
@@ -967,10 +978,11 @@ struct rq {
 	raw_spinlock_t		__lock;
 
 	struct task_struct *forced_next;   /* fast-path override */
-	struct task_struct *forced_prev;   /* fast-path override */
 	u64 fast_path_starttime;
 	u64 fast_path_usage;
 	u64 fast_path_endtime;
+
+	void __iomem *iocache_iomem;
 
 	/*
 	 * nr_running and cpu_load should be in the same cacheline because
