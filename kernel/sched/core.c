@@ -4483,62 +4483,152 @@ int wake_up_process(struct task_struct *p)
 }
 EXPORT_SYMBOL(wake_up_process);
 
-static __always_inline void __sched_force_next_local(struct rq *rq, struct task_struct *p)
-{
-	if (p != NULL) {
-		// p->my_oncpu_total_ns = 0;
-		// p->my_oncpu_start_ns = rq_clock_task(rq);
-		// p->my_oncpu_wall_start_ns = rq_clock_task(rq);
-		migrate_disable_switch(rq, p);
-		WRITE_ONCE(p->is_iocache_managed, true);
-		deactivate_task(rq, p, DEQUEUE_MOVE);
-	}
-    WRITE_ONCE(rq->forced_next, p);
-}
-
-void sched_force_next_local(struct task_struct *p)
+void deactivate_process_iocache(struct task_struct *p)
 {
     /* Assumes local hard-IRQ context: IRQs already disabled */
 	struct rq_flags rf;
 	struct rq *rq;
 
-	local_irq_disable();
+	if (!p) {
+		printk(KERN_WARNING "Bad input to deactivate_process_iocache\n");
+		return;
+	}
 
     rq = this_rq();
 	rq_lock(rq, &rf);
 	smp_mb__after_spinlock();
 
-    __sched_force_next_local(rq, p);
+    migrate_disable_switch(rq, p);
+	WRITE_ONCE(p->is_iocache_managed, true);
+	deactivate_task(rq, p, DEQUEUE_MOVE);
 
 	rq_unlock(rq, &rf);
-
-	local_irq_enable();
 }
-EXPORT_SYMBOL_GPL(sched_force_next_local);
+EXPORT_SYMBOL_GPL(deactivate_process_iocache);
 
 int wake_up_process_iocache(struct task_struct *p)
 {
 	struct rq_flags rf;
 
 	struct rq *rq = task_rq(p);
-
-	// printk(KERN_INFO "wake_up_process_iocache: start\n");
 	
-	local_irq_disable();
 	rq_lock(rq, &rf);
 	smp_mb__after_spinlock();
-
 	update_rq_clock(rq);
+
+	WRITE_ONCE(p->is_iocache_managed, false);
 	ttwu_do_activate(rq, p, ENQUEUE_MOVE, &rf);
 	
 	rq_unlock(rq, &rf);
-	local_irq_enable();
-
-	// printk(KERN_INFO "wake_up_process_iocache: end\n");
-
+	
 	return try_to_wake_up(p, TASK_NORMAL, WF_IOCACHE_WAKEUP);
 }
 EXPORT_SYMBOL_GPL(wake_up_process_iocache);
+
+int iocache_detach_task(struct task_struct *p)
+{
+    struct rq_flags rf;
+    struct rq *rq;
+
+    if (unlikely(!p))
+        return -EINVAL;
+
+    /* Only support FAIR (CFS) tasks in this minimal implementation. */
+    if (unlikely(p->sched_class != &fair_sched_class))
+        return -EINVAL;
+
+    rq = task_rq_lock(p, &rf);
+
+    /* You MUST NOT detach a running task. */
+    if (unlikely(task_on_cpu(rq, p))) {
+        task_rq_unlock(rq, p, &rf);
+        return -EBUSY; /* make caller re-try when p is not running */
+    }
+
+    /* If it is enqueued, deactivate it from CFS. */
+    if (task_on_rq_queued(p)) {
+        update_rq_clock(rq);
+        /* DEQUEUE_SLEEP matches the semantics of a task that won't run. */
+        deactivate_task(rq, p, DEQUEUE_SLEEP);
+    }
+
+    /*
+     * Keep the task un-wakeable by default while owned by hardware.
+     * Do not smash __state from random contexts except while holding rq lock.
+     * We intentionally park it in an uninterruptible state.
+     */
+    WRITE_ONCE(p->__state, TASK_UNINTERRUPTIBLE);
+
+    /* Your flag so other code knows it's managed externally. */
+    WRITE_ONCE(p->is_iocache_managed, true);
+
+    task_rq_unlock(rq, p, &rf);
+    return 0;
+}
+EXPORT_SYMBOL_GPL(iocache_detach_task);
+
+int iocache_attach_task(struct task_struct *p)
+{
+    struct rq_flags rf;
+    struct rq *rq;
+    int on_rq_before, ret = 0;
+
+    if (unlikely(!p))
+        return -EINVAL;
+
+    if (unlikely(p->sched_class != &fair_sched_class))
+        return -EINVAL;
+
+    rq = task_rq_lock(p, &rf);
+
+    /* Sanity: you cannot enqueue a task that is currently running. */
+    if (unlikely(task_on_cpu(rq, p))) {
+        ret = -EBUSY;
+        goto out_unlock;
+    }
+
+    on_rq_before = task_on_rq_queued(p);
+
+    /* Clear your external control flag; the kernel owns it again. */
+    WRITE_ONCE(p->is_iocache_managed, false);
+
+    /*
+     * Put it back to a wakeable/runnable state. TASK_RUNNING is fine; the
+     * enqueue helpers don't look at ->state (wakeup path usually does).
+     * We do this under rq lock to avoid races with a concurrent waker.
+     */
+    WRITE_ONCE(p->__state, TASK_RUNNING);
+
+    if (!on_rq_before) {
+        update_rq_clock(rq);
+
+        /*
+         * ENQUEUE_WAKEUP matches normal wake semantics: does the right
+         * placement in the rbtree and accounting. Avoid ENQUEUE_NOCLOCK
+         * because we just updated the clock.
+         */
+        activate_task(rq, p, ENQUEUE_WAKEUP);
+
+        /*
+         * Mirror ttwu's logic: see if p should preempt the current task.
+         * Use WF_SYNC if you know this is synchronous to reduce ping-pong.
+         */
+        check_preempt_curr(rq, p, WF_SYNC);
+    }
+
+    /*
+     * If p is on this rq and should run, ensure we schedule soon.
+     * check_preempt_curr may already have set need_resched.
+     */
+    if (rq->curr == rq->idle)
+        resched_curr(rq);
+
+out_unlock:
+    task_rq_unlock(rq, p, &rf);
+    return ret;
+}
+EXPORT_SYMBOL_GPL(iocache_attach_task);
+
 
 int register_iocache_forall(void __iomem *iocache_iomem)
 {
@@ -4546,20 +4636,41 @@ int register_iocache_forall(void __iomem *iocache_iomem)
 	struct rq_flags rf;
 	struct rq *rq;
 
+	local_irq_disable();
 	for (int cpu = 0; cpu < NUM_CPU; cpu++) {
 		rq = cpu_rq(cpu);
-		local_irq_disable();
 		rq_lock(rq, &rf);
 		smp_mb__after_spinlock();
 
 		WRITE_ONCE(rq->iocache_iomem, iocache_iomem);
 		
 		rq_unlock(rq, &rf);
-		local_irq_enable();
 	}
+	local_irq_enable();
 	return 0;
 }
 EXPORT_SYMBOL_GPL(register_iocache_forall);
+
+int unregister_iocache_forall(void)
+{
+	int NUM_CPU = 4;
+	struct rq_flags rf;
+	struct rq *rq;
+
+	local_irq_disable();
+	for (int cpu = 0; cpu < NUM_CPU; cpu++) {
+		rq = cpu_rq(cpu);
+		rq_lock(rq, &rf);
+		smp_mb__after_spinlock();
+
+		WRITE_ONCE(rq->iocache_iomem, NULL);
+		
+		rq_unlock(rq, &rf);
+	}
+	local_irq_enable();
+	return 0;
+}
+EXPORT_SYMBOL_GPL(unregister_iocache_forall);
 
 int wake_up_state(struct task_struct *p, unsigned int state)
 {
@@ -6744,6 +6855,10 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		fast_path_runnable = true;
 		fn_state = READ_ONCE(fn->__state);
 
+		if (!READ_ONCE(rq->forced_prev)) {
+			WRITE_ONCE(rq->forced_prev, prev);
+		}
+
 		// printk(KERN_INFO "[Scheduler] Fast Path Ready, id=%d, cpu=%d\n", fn->iocache_id, cpu);
 	}
 	else {
@@ -6751,16 +6866,6 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		fast_path = false;
 		fast_path_runnable = false;
 	}
-
-	// fn = READ_ONCE(rq->forced_next);
-	// if (fn) 
-	// 	fn_state = READ_ONCE(fn->__state);
-
-	// bool fast_path = fn && (task_cpu(fn) == cpu);
-	// bool fast_path_runnable = fast_path &&
-	// 						 (fn_state == TASK_RUNNING ||
-	// 						  fn_state == TASK_PARKED ||
-	// 						  fn_state == TASK_IOCACHE_SPECIAL);
 		
 	if (!fast_path) {
 		/* Promote REQ to ACT */
@@ -6770,7 +6875,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	
 	switch_count = &prev->nivcsw;
 
-	if (!prev->is_iocache_managed) {
+	if (!READ_ONCE(prev->is_iocache_managed)) {
 		/*
 		* We must load prev->state once (task_struct::state is volatile), such
 		* that we form a control dependency vs deactivate_task() below.
@@ -6799,7 +6904,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 				*
 				* After this, schedule() must not care about p->state any more.
 				*/
-				deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+				deactivate_task(rq, prev, DEQUEUE_SLEEP);
 
 				if (prev->in_iowait) {
 					atomic_inc(&rq->nr_iowait);
@@ -6816,53 +6921,11 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	// }
 	
 	if (fast_path) {
-		switch (fn_state)
-		{
-		case TASK_RUNNING:
-			next = fn;
-			goto have_next; 
-		case TASK_IOCACHE_SPECIAL: 
-			/* This happens during process ending. 
-			 * We give the process back to Linux 
-			 */
-			WRITE_ONCE(fn->__state, TASK_RUNNING);
-			if (!task_on_rq_queued(fn)) {
-				// activate_task(rq, fn, ENQUEUE_WAKEUP);
-				ttwu_do_activate(rq, fn, ENQUEUE_WAKEUP, &rf);
-			}
-			next = fn;
-			
-    		// check_preempt_curr(rq, fn, 0);
-			// fn->my_oncpu_wall_ns = rq_clock_task(rq) - fn->my_oncpu_wall_start_ns;
-
-			goto have_next; 
-		case TASK_INTERRUPTIBLE:
-			/* Waiting for interrupts: Let the normal scheduler work */
-			// printk(KERN_INFO "*** I am in interruptible ***\n");
-			// if (prev == fn) {
-			// 	next = rq->idle;
-			// 	goto have_next; 
-			// }
-			// break;
-
-			next = fn;
-			WRITE_ONCE(fn->__state, TASK_RUNNING);
-			goto have_next; 
-		default:
-			break;
-		}
+		next = fn;
+		goto have_next;
     }
-	else {
-		// We should run a normal task
-		if (prev->is_iocache_managed) {
-			next = rq->idle;
-			goto have_next; 
-		}
-	}
 
 	next = pick_next_task(rq, prev, &rf);
-
-	WARN_ON_ONCE(fast_path && fn_state == TASK_INTERRUPTIBLE && next == fn);
 
 have_next:
 	// /* Start the slice for fn that will run */

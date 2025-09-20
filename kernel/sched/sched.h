@@ -952,9 +952,12 @@ struct balance_callback {
 	void (*func)(struct rq *rq);
 };
 
-void sched_force_next_local(struct task_struct *p);
+void deactivate_process_iocache(struct task_struct *p);
 int wake_up_process_iocache(struct task_struct *p);
+int iocache_detach_task(struct task_struct *p);
+int iocache_attach_task(struct task_struct *p);
 int register_iocache_forall(void __iomem *iocache_iomem);
+int unregister_iocache_forall(void);
 
 #define REG(base, off) ((void __iomem *)((u8 __iomem *)(base) + (off)))
 #define IOCACHE_KICK_BASE    0x100UL
@@ -978,6 +981,7 @@ struct rq {
 	raw_spinlock_t		__lock;
 
 	struct task_struct *forced_next;   /* fast-path override */
+	struct task_struct *forced_prev;   /* fast-path override */
 	u64 fast_path_starttime;
 	u64 fast_path_usage;
 	u64 fast_path_endtime;

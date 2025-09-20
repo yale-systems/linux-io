@@ -71,9 +71,12 @@ struct task_delay_info;
 struct task_group;
 struct user_event_mm;
 
-void sched_force_next_local(struct task_struct *p);
+void deactivate_process_iocache(struct task_struct *p);
 int wake_up_process_iocache(struct task_struct *p);
+int iocache_detach_task(struct task_struct *p);
+int iocache_attach_task(struct task_struct *p);
 int register_iocache_forall(void __iomem *iocache_iomem);
+int unregister_iocache_forall(void);
 
 /*
  * Task state bitmask. NOTE! These bits are also
@@ -798,11 +801,15 @@ struct task_struct {
 	// u64 my_oncpu_wall_ns;
 
 	int iocache_id;
+	bool iocache_id_valid;
 	bool is_iocache_managed;
 	void __iomem *iocache_iomem;
 
 	struct hrtimer to_hrtimer;
 	ktime_t to_period;
+
+	struct hrtimer wakeup_hrtimer;
+	ktime_t wakeup_period;
 
 
 	int				prio;
