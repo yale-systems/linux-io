@@ -5272,9 +5272,11 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 	/*
 	 * Enabling NEXT_BUDDY will affect latency but not fairness.
 	 */
-	if (sched_feat(NEXT_BUDDY) &&
-	    cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next))
-		return cfs_rq->next;
+	if (sched_feat(NEXT_BUDDY) && cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next))
+	{
+		if (cfs_rq->next)
+			return cfs_rq->next;
+	}
 
 	return pick_eevdf(cfs_rq);
 }
@@ -8183,6 +8185,7 @@ again:
 		goto idle;
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
+	WARN_ON_ONCE(!prev);
 	if (!prev || prev->sched_class != &fair_sched_class)
 		goto simple;
 
@@ -8197,6 +8200,7 @@ again:
 	do {
 		struct sched_entity *curr = cfs_rq->curr;
 
+		WARN_ON_ONCE(!curr);
 		/*
 		 * Since we got here without doing put_prev_entity() we also
 		 * have to consider cfs_rq->curr. If it is still a runnable
@@ -8215,6 +8219,7 @@ again:
 			 * Therefore the nr_running test will indeed
 			 * be correct.
 			 */
+			WARN_ON_ONCE(!cfs_rq);
 			if (unlikely(check_cfs_rq_runtime(cfs_rq))) {
 				cfs_rq = &rq->cfs;
 
@@ -8226,7 +8231,13 @@ again:
 		}
 
 		se = pick_next_entity(cfs_rq, curr);
+		WARN_ON_ONCE(!se);
+		if (!se) {
+			goto simple;
+		}
+		
 		cfs_rq = group_cfs_rq(se);
+		
 	} while (cfs_rq);
 
 	p = task_of(se);
@@ -8240,6 +8251,9 @@ again:
 		struct sched_entity *pse = &prev->se;
 
 		while (!(cfs_rq = is_same_group(se, pse))) {
+			WARN_ON_ONCE(!se);
+			WARN_ON_ONCE(!pse);
+
 			int se_depth = se->depth;
 			int pse_depth = pse->depth;
 
@@ -8265,6 +8279,10 @@ simple:
 
 	do {
 		se = pick_next_entity(cfs_rq, NULL);
+		WARN_ON_ONCE(!se);
+		if (!se) {
+			goto idle;
+		}
 		set_next_entity(cfs_rq, se);
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
@@ -8278,6 +8296,7 @@ done: __maybe_unused;
 	 * the list, so our cfs_tasks list becomes MRU
 	 * one.
 	 */
+	WARN_ON_ONCE(!p);
 	list_move(&p->se.group_node, &rq->cfs_tasks);
 #endif
 

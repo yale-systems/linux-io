@@ -4485,11 +4485,21 @@ EXPORT_SYMBOL(wake_up_process);
 
 static __always_inline void __sched_force_next_local(struct rq *rq, struct task_struct *p)
 {
+	int cpu;
+	int row;
+
 	if (p != NULL) {
 		// p->my_oncpu_total_ns = 0;
 		// p->my_oncpu_start_ns = rq_clock_task(rq);
 		// p->my_oncpu_wall_start_ns = rq_clock_task(rq);
 		migrate_disable_switch(rq, p);
+		// cpu = smp_processor_id();
+		// row = p->iocache_id;
+
+		// iowrite32(cpu, 							REG(current->iocache_iomem, IOCACHE_REG_PROC_CPU(row)));
+		// iowrite64((u64) (uintptr_t) current, 	REG(current->iocache_iomem, IOCACHE_REG_PROC_PTR(row)));
+		// mmiowb();
+
 		WRITE_ONCE(p->is_iocache_managed, true);
 		deactivate_task(rq, p, DEQUEUE_MOVE);
 	}
