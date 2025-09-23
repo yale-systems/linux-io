@@ -4497,15 +4497,17 @@ static __always_inline void __sched_force_next_local(struct rq *rq, struct task_
 		row = p->iocache_id;
 
 		WRITE_ONCE(p->is_iocache_managed, true);
-		deactivate_task(rq, p, DEQUEUE_MOVE);
+		WRITE_ONCE(p->__state, TASK_UNINTERRUPTIBLE);
+		deactivate_task(rq, p, DEQUEUE_SLEEP);
 
 		rq->nr_iocache_running += 1;
 
 		iowrite32(cpu, 							REG(rq->iocache_iomem, IOCACHE_REG_PROC_CPU(row)));
 		iowrite64((u64) (uintptr_t) current, 	REG(rq->iocache_iomem, IOCACHE_REG_PROC_PTR(row)));
-		smp_mb();
+		wmb();
+		readl(REG(rq->iocache_iomem, IOCACHE_REG_PROC_PTR(row)));  // flush previous reads
+
 	}
-    WRITE_ONCE(rq->forced_next, p);
 }
 
 void sched_force_next_local(struct task_struct *p)
@@ -4537,29 +4539,39 @@ int wake_up_process_iocache(struct task_struct *p)
 
 	// printk(KERN_INFO "wake_up_process_iocache: start\n");
 	
-	local_irq_disable();
+	// local_irq_disable();
 	rq_lock(rq, &rf);
-	smp_mb__after_spinlock();
 
-	row = p->iocache_id;
+	// row = p->iocache_id;
 
-	update_rq_clock(rq);
-	ttwu_do_activate(rq, p, ENQUEUE_MOVE, &rf);
+	// update_rq_clock(rq);
 
-	rq->nr_iocache_running -= 1;
+	if (task_on_rq_queued(p)) {
+		WRITE_ONCE(p->__state, TASK_RUNNING);
+	}
+	else {
+		ttwu_do_activate(rq, p, ENQUEUE_WAKEUP, &rf);
+	}
 
-	WRITE_ONCE(p->is_iocache_managed, false);
+	rq->fast_path = true;
+	rq->forced_next = p;
 
-	iowrite32(0, 	REG(rq->iocache_iomem, IOCACHE_REG_PROC_CPU(row)));
-	iowrite64(0, 	REG(rq->iocache_iomem, IOCACHE_REG_PROC_PTR(row)));
-	smp_mb();
+	// rq->nr_iocache_running -= 1;
+
+	// WRITE_ONCE(p->is_iocache_managed, false);
+
+	// iowrite32(0, 	REG(rq->iocache_iomem, IOCACHE_REG_PROC_CPU(row)));
+	// iowrite64(0, 	REG(rq->iocache_iomem, IOCACHE_REG_PROC_PTR(row)));
+	// wmb();
+	// readl(REG(rq->iocache_iomem, IOCACHE_REG_PROC_PTR(row))); // flush previous reads
 	
 	rq_unlock(rq, &rf);
-	local_irq_enable();
+	// local_irq_enable();
 
 	// printk(KERN_INFO "wake_up_process_iocache: end\n");
 
-	return try_to_wake_up(p, TASK_NORMAL, WF_IOCACHE_WAKEUP);
+	return 1;
+	// return try_to_wake_up(p, TASK_NORMAL, WF_IOCACHE_WAKEUP);
 }
 EXPORT_SYMBOL_GPL(wake_up_process_iocache);
 
@@ -6097,29 +6109,29 @@ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	const struct sched_class *class;
 	struct task_struct *p;
 
-	/*
-	 * Optimization: we know that if all tasks are in the fair class we can
-	 * call that function directly, but only if the @prev task wasn't of a
-	 * higher scheduling class, because otherwise those lose the
-	 * opportunity to pull in more work from other CPUs.
-	 */
-	if (likely(!sched_class_above(prev->sched_class, &fair_sched_class) &&
-		   rq->nr_running == rq->cfs.h_nr_running)) {
+// 	/*
+// 	 * Optimization: we know that if all tasks are in the fair class we can
+// 	 * call that function directly, but only if the @prev task wasn't of a
+// 	 * higher scheduling class, because otherwise those lose the
+// 	 * opportunity to pull in more work from other CPUs.
+// 	 */
+// 	if (likely(!sched_class_above(prev->sched_class, &fair_sched_class) &&
+// 		   rq->nr_running == rq->cfs.h_nr_running)) {
 
-		p = pick_next_task_fair(rq, prev, rf);
-		if (unlikely(p == RETRY_TASK))
-			goto restart;
+// 		p = pick_next_task_fair(rq, prev, rf);
+// 		if (unlikely(p == RETRY_TASK))
+// 			goto restart;
 
-		/* Assume the next prioritized class is idle_sched_class */
-		if (!p) {
-			put_prev_task(rq, prev);
-			p = pick_next_task_idle(rq);
-		}
+// 		/* Assume the next prioritized class is idle_sched_class */
+// 		if (!p) {
+// 			put_prev_task(rq, prev);
+// 			p = pick_next_task_idle(rq);
+// 		}
 
-		return p;
-	}
+// 		return p;
+// 	}
 
-restart:
+// restart:
 	put_prev_task_balance(rq, prev, rf);
 
 	for_each_class(class) {
@@ -6744,50 +6756,8 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	 */
 	rq_lock(rq, &rf);
 	smp_mb__after_spinlock();
-
-	bool fast_path;
-	bool fast_path_runnable;
-	void *iomem = READ_ONCE(rq->iocache_iomem);
-
-	u64 raw_next_pointer;
-	raw_next_pointer = iomem ? 
-						ioread64(REG(iomem, IOCACHE_REG_SCHED_READ(cpu))) : 0;
-	
-	if (raw_next_pointer) {
-		fn = (struct task_struct *) raw_next_pointer;
-		if (unlikely(!fn || !READ_ONCE(fn->is_iocache_managed))) {
-
-			WARN_ON_ONCE(!READ_ONCE(fn->is_iocache_managed));
-
-			fn = NULL;
-			fast_path = false;
-			fast_path_runnable = false;
-		}
-		else {
-			fast_path = true;
-			fast_path_runnable = true;
-			fn_state = READ_ONCE(fn->__state);
-		}
-
-		// printk(KERN_INFO "[Scheduler] Fast Path Ready, id=%d, cpu=%d\n", fn->iocache_id, cpu);
-	}
-	else {
-		fn = NULL;
-		fast_path = false;
-		fast_path_runnable = false;
-	}
-
-	// fn = READ_ONCE(rq->forced_next);
-	// if (fn) 
-	// 	fn_state = READ_ONCE(fn->__state);
-
-	// bool fast_path = fn && (task_cpu(fn) == cpu);
-	// bool fast_path_runnable = fast_path &&
-	// 						 (fn_state == TASK_RUNNING ||
-	// 						  fn_state == TASK_PARKED ||
-	// 						  fn_state == TASK_IOCACHE_SPECIAL);
 		
-	if (!fast_path) {
+	if (!rq->fast_path) {
 		/* Promote REQ to ACT */
 		rq->clock_update_flags <<= 1;
 		update_rq_clock(rq);
@@ -6795,116 +6765,57 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	
 	switch_count = &prev->nivcsw;
 
-	if (!READ_ONCE(prev->is_iocache_managed)) {
-		/*
-		* We must load prev->state once (task_struct::state is volatile), such
-		* that we form a control dependency vs deactivate_task() below.
-		*/
-		prev_state = READ_ONCE(prev->__state);
-		if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
-			if (signal_pending_state(prev_state, prev)) {
-				WRITE_ONCE(prev->__state, TASK_RUNNING);
-			} else {
-				prev->sched_contributes_to_load =
-					(prev_state & TASK_UNINTERRUPTIBLE) &&
-					!(prev_state & TASK_NOLOAD) &&
-					!(prev_state & TASK_FROZEN);
+	/*
+	* We must load prev->state once (task_struct::state is volatile), such
+	* that we form a control dependency vs deactivate_task() below.
+	*/
+	prev_state = READ_ONCE(prev->__state);
+	if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
+		if (signal_pending_state(prev_state, prev)) {
+			WRITE_ONCE(prev->__state, TASK_RUNNING);
+		} else {
+			prev->sched_contributes_to_load =
+				(prev_state & TASK_UNINTERRUPTIBLE) &&
+				!(prev_state & TASK_NOLOAD) &&
+				!(prev_state & TASK_FROZEN);
 
-				if (prev->sched_contributes_to_load)
-					rq->nr_uninterruptible++;
+			if (prev->sched_contributes_to_load)
+				rq->nr_uninterruptible++;
 
-				/*
-				* __schedule()			ttwu()
-				*   prev_state = prev->state;    if (p->on_rq && ...)
-				*   if (prev_state)		    goto out;
-				*     p->on_rq = 0;		  smp_acquire__after_ctrl_dep();
-				*				  p->state = TASK_WAKING
-				*
-				* Where __schedule() and ttwu() have matching control dependencies.
-				*
-				* After this, schedule() must not care about p->state any more.
-				*/
-				deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+			/*
+			* __schedule()			ttwu()
+			*   prev_state = prev->state;    if (p->on_rq && ...)
+			*   if (prev_state)		    goto out;
+			*     p->on_rq = 0;		  smp_acquire__after_ctrl_dep();
+			*				  p->state = TASK_WAKING
+			*
+			* Where __schedule() and ttwu() have matching control dependencies.
+			*
+			* After this, schedule() must not care about p->state any more.
+			*/
+			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
 
-				if (prev->in_iowait) {
-					atomic_inc(&rq->nr_iowait);
-					delayacct_blkio_start();
-				}
+			if (prev->in_iowait) {
+				atomic_inc(&rq->nr_iowait);
+				delayacct_blkio_start();
 			}
-			switch_count = &prev->nvcsw;
 		}
+		switch_count = &prev->nvcsw;
 	}
-	
-	// /* Charge the slice that 'prev' just ran */
-    // if (fast_path && prev == fn) {
-	// 	my_oncpu_stop(rq, fn);
+
+	// if (rq->forced_next) {
+		// next = rq->forced_next;
+		// rq->forced_next = NULL;
 	// }
-	
-	if (fast_path) {
-		switch (fn_state)
-		{
-		case TASK_RUNNING:
-			next = fn;
-			goto have_next; 
-		case TASK_IOCACHE_SPECIAL: 
-			/* This happens during process ending. 
-			 * We give the process back to Linux 
-			 */
-			WRITE_ONCE(fn->__state, TASK_RUNNING);
-			if (!task_on_rq_queued(fn)) {
-				// activate_task(rq, fn, ENQUEUE_WAKEUP);
-				ttwu_do_activate(rq, fn, ENQUEUE_WAKEUP, &rf);
-			}
-			next = fn;
-			
-    		// check_preempt_curr(rq, fn, 0);
-			// fn->my_oncpu_wall_ns = rq_clock_task(rq) - fn->my_oncpu_wall_start_ns;
-
-			goto have_next; 
-		case TASK_INTERRUPTIBLE:
-			/* Waiting for interrupts: Let the normal scheduler work */
-			// printk(KERN_INFO "*** I am in interruptible ***\n");
-			// if (prev == fn) {
-			// 	next = rq->idle;
-			// 	goto have_next; 
-			// }
-			// break;
-
-			next = fn;
-			WRITE_ONCE(fn->__state, TASK_RUNNING);
-			goto have_next; 
-		default:
-			break;
-		}
-    }
 	// else {
-	// 	// We should run a normal task
-	// 	if (READ_ONCE(prev->is_iocache_managed)) {
-	// 		next = rq->idle;
-	// 		goto have_next; 
-	// 	}
-	// }
-
 	next = pick_next_task(rq, prev, &rf);
-
-	WARN_ON_ONCE(fast_path && fn_state == TASK_INTERRUPTIBLE && next == fn);
-
-have_next:
-	// /* Start the slice for fn that will run */
-	// if (fast_path && fn_state != TASK_IOCACHE_SPECIAL && next == fn) {
-	// 	my_oncpu_start(rq, next);
 	// }
-	
+
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 #ifdef CONFIG_SCHED_DEBUG
 	rq->last_seen_need_resched_ns = 0;
 #endif
-
-	// Kick IOCache scheduler
-	if (rq->iocache_iomem) {
-		iowrite32(cpu, REG(iomem, IOCACHE_REG_RX_KICK_ALL_CPU));
-	}
 
 	if (likely(prev != next)) {
 		rq->nr_switches++;
@@ -6931,10 +6842,11 @@ have_next:
 
 		migrate_disable_switch(rq, prev);
 
-		if (!fast_path_runnable) { 
+		if (!rq->fast_path) { 
 			// No need for these in fast path
 			psi_sched_switch(prev, next, !task_on_rq_queued(prev));
 			trace_sched_switch(sched_mode & SM_MASK_PREEMPT, prev, next, prev_state);
+			rq->fast_path   = false;
 		}
 
 		/* Also unlocks the rq: */

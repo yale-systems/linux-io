@@ -1058,6 +1058,8 @@ struct rq {
 	u64 fast_path_usage;
 	u64 fast_path_endtime;
 
+	bool fast_path;
+
 	void __iomem *iocache_iomem;
 
 	/*
