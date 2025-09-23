@@ -4493,15 +4493,17 @@ static __always_inline void __sched_force_next_local(struct rq *rq, struct task_
 		// p->my_oncpu_start_ns = rq_clock_task(rq);
 		// p->my_oncpu_wall_start_ns = rq_clock_task(rq);
 		migrate_disable_switch(rq, p);
-		// cpu = smp_processor_id();
-		// row = p->iocache_id;
-
-		// iowrite32(cpu, 							REG(current->iocache_iomem, IOCACHE_REG_PROC_CPU(row)));
-		// iowrite64((u64) (uintptr_t) current, 	REG(current->iocache_iomem, IOCACHE_REG_PROC_PTR(row)));
-		// mmiowb();
+		cpu = smp_processor_id();
+		row = p->iocache_id;
 
 		WRITE_ONCE(p->is_iocache_managed, true);
 		deactivate_task(rq, p, DEQUEUE_MOVE);
+
+		rq->nr_iocache_running += 1;
+
+		iowrite32(cpu, 							REG(rq->iocache_iomem, IOCACHE_REG_PROC_CPU(row)));
+		iowrite64((u64) (uintptr_t) current, 	REG(rq->iocache_iomem, IOCACHE_REG_PROC_PTR(row)));
+		smp_mb();
 	}
     WRITE_ONCE(rq->forced_next, p);
 }
@@ -4529,6 +4531,7 @@ EXPORT_SYMBOL_GPL(sched_force_next_local);
 int wake_up_process_iocache(struct task_struct *p)
 {
 	struct rq_flags rf;
+	int row;
 
 	struct rq *rq = task_rq(p);
 
@@ -4538,8 +4541,18 @@ int wake_up_process_iocache(struct task_struct *p)
 	rq_lock(rq, &rf);
 	smp_mb__after_spinlock();
 
+	row = p->iocache_id;
+
 	update_rq_clock(rq);
 	ttwu_do_activate(rq, p, ENQUEUE_MOVE, &rf);
+
+	rq->nr_iocache_running -= 1;
+
+	WRITE_ONCE(p->is_iocache_managed, false);
+
+	iowrite32(0, 	REG(rq->iocache_iomem, IOCACHE_REG_PROC_CPU(row)));
+	iowrite64(0, 	REG(rq->iocache_iomem, IOCACHE_REG_PROC_PTR(row)));
+	smp_mb();
 	
 	rq_unlock(rq, &rf);
 	local_irq_enable();
@@ -6743,16 +6756,18 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	if (raw_next_pointer) {
 		fn = (struct task_struct *) raw_next_pointer;
 		if (unlikely(!fn || !READ_ONCE(fn->is_iocache_managed))) {
-			panic("iocache fast path: bad task ptr (fn=%px) managed=%d cpu=%d state=%ld\n",
-				fn,
-				fn ? (int)READ_ONCE(fn->is_iocache_managed) : -1,
-				raw_smp_processor_id(),
-				fn ? READ_ONCE(fn->__state) : -1L);
-		}
 
-		fast_path = true;
-		fast_path_runnable = true;
-		fn_state = READ_ONCE(fn->__state);
+			WARN_ON_ONCE(!READ_ONCE(fn->is_iocache_managed));
+
+			fn = NULL;
+			fast_path = false;
+			fast_path_runnable = false;
+		}
+		else {
+			fast_path = true;
+			fast_path_runnable = true;
+			fn_state = READ_ONCE(fn->__state);
+		}
 
 		// printk(KERN_INFO "[Scheduler] Fast Path Ready, id=%d, cpu=%d\n", fn->iocache_id, cpu);
 	}
@@ -6780,7 +6795,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	
 	switch_count = &prev->nivcsw;
 
-	if (!prev->is_iocache_managed) {
+	if (!READ_ONCE(prev->is_iocache_managed)) {
 		/*
 		* We must load prev->state once (task_struct::state is volatile), such
 		* that we form a control dependency vs deactivate_task() below.
@@ -6862,13 +6877,13 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			break;
 		}
     }
-	else {
-		// We should run a normal task
-		if (prev->is_iocache_managed) {
-			next = rq->idle;
-			goto have_next; 
-		}
-	}
+	// else {
+	// 	// We should run a normal task
+	// 	if (READ_ONCE(prev->is_iocache_managed)) {
+	// 		next = rq->idle;
+	// 		goto have_next; 
+	// 	}
+	// }
 
 	next = pick_next_task(rq, prev, &rf);
 
@@ -10207,6 +10222,7 @@ void __init sched_init(void)
 		rq = cpu_rq(i);
 		raw_spin_lock_init(&rq->__lock);
 		rq->nr_running = 0;
+		rq->nr_iocache_running = 0;
 		rq->calc_load_active = 0;
 		rq->calc_load_update = jiffies + LOAD_FREQ;
 		init_cfs_rq(&rq->cfs);

@@ -8181,6 +8181,9 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
 		goto idle;
 	}
 again:
+	if (rq->nr_iocache_running > 0) {
+		goto force_idle;
+	}
 	if (!sched_fair_runnable(rq))
 		goto idle;
 
@@ -8325,6 +8328,9 @@ idle:
 	if (new_tasks > 0)
 		goto again;
 
+force_idle:
+	if (!rf)
+		return NULL;
 	/*
 	 * rq is about to be idle, check if we need to update the
 	 * lost_idle_time of clock_pelt
